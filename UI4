@@ -62,11 +62,26 @@ local function New(class, props)
 	return obj
 end
 
+--// live "Roundness" multiplier (Settings -> Appearance). Pill radii (>=900)
+--// are left alone so circles stay circles.
+local RoundnessMult = 1
+
+local function ScaledRadius(radius)
+	if radius >= 900 then
+		return radius
+	end
+	return math.max(0, math.floor(radius * RoundnessMult + 0.5))
+end
+
 local function Corner(obj, radius)
-	return New("UICorner", {
+	radius = radius or 14
+	local c = New("UICorner", {
 		Parent = obj,
-		CornerRadius = UDim.new(0, radius or 14),
+		CornerRadius = UDim.new(0, ScaledRadius(radius)),
 	})
+	-- remembered so the "Roundness" slider can rescale every corner live
+	c:SetAttribute("KM_BaseRadius", radius)
+	return c
 end
 
 --// V7 FIX: reuses an existing UIStroke instead of stacking a new one
@@ -83,6 +98,110 @@ local function Stroke(obj, color, thickness)
 		s.Thickness = thickness
 	end
 	return s
+end
+
+--// V8.5 visual helpers: gradients, soft shadows, glows
+local function Gradient(obj, c1, c2, rotation, transparency)
+	local g = obj:FindFirstChildOfClass("UIGradient")
+	if not g then
+		g = Instance.new("UIGradient")
+		g.Parent = obj
+	end
+	g.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, c1),
+		ColorSequenceKeypoint.new(1, c2),
+	})
+	g.Rotation = rotation or 0
+	if transparency then
+		g.Transparency = transparency
+	end
+	return g
+end
+
+local SHADOW_ASSET = "rbxassetid://6015045625"
+
+--// soft drop shadow: `host` must not clip, `target` is the frame it hugs
+local function Shadow(host, target, spread, transparency, color)
+	local sh = Instance.new("ImageLabel")
+	sh.Name = "KM_Shadow"
+	sh.BackgroundTransparency = 1
+	sh.Image = SHADOW_ASSET
+	sh.ImageColor3 = color or Color3.new(0, 0, 0)
+	sh.ImageTransparency = transparency or 0.55
+	sh.ScaleType = Enum.ScaleType.Slice
+	sh.SliceCenter = Rect.new(49, 49, 450, 450)
+	sh.ZIndex = math.max(0, (target.ZIndex or 1) - 1)
+	sh.AnchorPoint = target.AnchorPoint
+	sh.Parent = host
+
+	spread = spread or 22
+	local function sync()
+		sh.Size = UDim2.new(
+			target.Size.X.Scale, target.Size.X.Offset + spread * 2,
+			target.Size.Y.Scale, target.Size.Y.Offset + spread * 2
+		)
+		sh.Position = UDim2.new(
+			target.Position.X.Scale, target.Position.X.Offset,
+			target.Position.Y.Scale, target.Position.Y.Offset + 4
+		)
+		sh.Visible = target.Visible
+	end
+	sync()
+	target:GetPropertyChangedSignal("Size"):Connect(sync)
+	target:GetPropertyChangedSignal("Position"):Connect(sync)
+	target:GetPropertyChangedSignal("Visible"):Connect(sync)
+	return sh
+end
+
+--// shadow drawn as a child of the frame itself - use this when the frame is
+--// managed by a UIListLayout (a sibling shadow would become a list item)
+local function ShadowIn(target, spread, transparency)
+	spread = spread or 16
+	local sh = Instance.new("ImageLabel")
+	sh.Name = "KM_ShadowIn"
+	sh.BackgroundTransparency = 1
+	sh.Image = SHADOW_ASSET
+	sh.ImageColor3 = Color3.new(0, 0, 0)
+	sh.ImageTransparency = transparency or 0.6
+	sh.ScaleType = Enum.ScaleType.Slice
+	sh.SliceCenter = Rect.new(49, 49, 450, 450)
+	sh.Size = UDim2.new(1, spread * 2, 1, spread * 2)
+	sh.Position = UDim2.new(0, -spread, 0, -spread + 3)
+	sh.ZIndex = math.max(0, (target.ZIndex or 1) - 1)
+	sh.Parent = target
+	return sh
+end
+
+--// coloured glow ring behind a frame (used for the tab indicator + orb)
+local function Glow(parent, target, color, spread, transparency)
+	local g = Instance.new("ImageLabel")
+	g.Name = "KM_Glow"
+	g.BackgroundTransparency = 1
+	g.Image = SHADOW_ASSET
+	g.ImageColor3 = color
+	g.ImageTransparency = transparency or 0.55
+	g.ScaleType = Enum.ScaleType.Slice
+	g.SliceCenter = Rect.new(49, 49, 450, 450)
+	g.ZIndex = math.max(0, (target.ZIndex or 1) - 1)
+	g.AnchorPoint = target.AnchorPoint
+	g.Parent = parent
+	spread = spread or 10
+	local function sync()
+		g.Size = UDim2.new(
+			target.Size.X.Scale, target.Size.X.Offset + spread * 2,
+			target.Size.Y.Scale, target.Size.Y.Offset + spread * 2
+		)
+		g.Position = UDim2.new(
+			target.Position.X.Scale, target.Position.X.Offset - 0,
+			target.Position.Y.Scale, target.Position.Y.Offset
+		)
+		g.Visible = target.Visible
+	end
+	sync()
+	target:GetPropertyChangedSignal("Size"):Connect(sync)
+	target:GetPropertyChangedSignal("Position"):Connect(sync)
+	target:GetPropertyChangedSignal("Visible"):Connect(sync)
+	return g
 end
 
 local function Tween(obj, props, speed, style, dir)
@@ -224,6 +343,33 @@ local function Esc(s)
 	return s
 end
 
+--// Roblox's Gotham has no emoji glyphs, so unsupported codepoints render as
+--// a tofu box. Strip them for display (the raw text is kept for copy/execute).
+local function StripUnsupportedGlyphs(s)
+	s = tostring(s or "")
+	if type(utf8) ~= "table" or type(utf8.codes) ~= "function" then
+		return s
+	end
+	local ok, out = pcall(function()
+		local parts = {}
+		for _, code in utf8.codes(s) do
+			local drop =
+				code >= 0x1F000                      -- emoji + pictographs
+				or code == 0xFE0F or code == 0xFE0E  -- variation selectors
+				or code == 0x200D or code == 0x20E3  -- ZWJ / keycap
+				or (code >= 0xE000 and code <= 0xF8FF) -- private use
+			if not drop then
+				table.insert(parts, utf8.char(code))
+			end
+		end
+		return table.concat(parts)
+	end)
+	if ok and type(out) == "string" then
+		return out
+	end
+	return s
+end
+
 local function Truncate(s, max)
 	s = tostring(s or "")
 	if #s > max then
@@ -317,6 +463,7 @@ local function FormatInline(s)
 end
 
 local function FormatChunk(text, baseSize)
+	text = StripUnsupportedGlyphs(text)
 	baseSize = baseSize or 13
 	local out = {}
 	for line in (tostring(text or "") .. "\n"):gmatch("(.-)\n") do
@@ -558,26 +705,46 @@ local ThemeList = {
 --// ======================================================================
 
 local WALLPAPERS = {
-	{Name = "Aesthetic Girl",   Id = 8652665149},
-	{Name = "Dark Aesthetic",   Id = 10341849885},
-	{Name = "Kawaii Girl",      Id = 11425468695},
-	{Name = "Power",            Id = 11778372953},
-	{Name = "Nezuko",           Id = 5444301611},
-	{Name = "Anya",             Id = 9657394390},
-	{Name = "Kokomi",           Id = 11761637789},
-	{Name = "Anime Girl",       Id = 14640964816},
-	{Name = "Umaru",            Id = 8598068650},
-	{Name = "White Eyes OC",    Id = 9794138570},
-	{Name = "Lo-Fi Girl",       Id = 6594109832},
-	{Name = "Pastel Girl",      Id = 1117897387},
-	{Name = "Moon Girl",        Id = 1280392000},
-	{Name = "Anime Eyes",       Id = 6033191292},
-	{Name = "Ghibli Style",     Id = 5739060035},
-	{Name = "Anime Sky",        Id = 6726922968},
-	{Name = "Sad Girl",         Id = 6239938337},
-	{Name = "Noelle",           Id = 6239942849},
-	{Name = "Girlie",           Id = 995551519},
-	{Name = "Cover Girl",       Id = 6239914883},
+	{Name = "Sunshine Hina", File = "UIBG_01.png", Id = 8652665149,
+		Url = "https://wallpapers.com/images/hd/sunshine-girl-hina-4k-aesthetic-anime-f4x7flboohp83ckz.jpg"},
+	{Name = "Red Horns", File = "UIBG_02.png", Id = 10341849885,
+		Url = "https://wallpapers.com/images/hd/girl-with-red-horns-dark-aesthetic-anime-pfp-ua14k2yr31qfmm48.jpg"},
+	{Name = "Glitch Girl", File = "UIBG_03.png", Id = 11425468695,
+		Url = "https://wallpapers.com/images/hd/4k-aesthetic-anime-girl-with-glitch-wolzuz45q7n93r0g.jpg"},
+	{Name = "Violet Muse", File = "UIBG_04.png", Id = 11778372953,
+		Url = "https://wallpaperaccess.com/full/9155815.jpg"},
+	{Name = "Purple Dream", File = "UIBG_05.png", Id = 5444301611,
+		Url = "https://wallpaperaccess.com/full/9155811.jpg"},
+	{Name = "Neon Cyber", File = "UIBG_06.png", Id = 9657394390,
+		Url = "https://i.etsystatic.com/46144721/r/il/08adc3/5422888116/il_340x270.5422888116_gdzu.jpg"},
+	{Name = "Dragon Girl", File = "UIBG_07.png", Id = 11761637789,
+		Url = "https://w0.peakpx.com/wallpaper/600/205/HD-wallpaper-anime-cyberpunk-night-city-neon-glow-2d-anime-girls-dragon-girl-horns-blue-hair-purple-eyes-looking-back-arknights-chen-arknights.jpg"},
+	{Name = "Neon Cityscape", File = "UIBG_08.png", Id = 14640964816,
+		Url = "https://wallpapers.com/images/hd/cyberpunk-anime-girl-in-neon-cityscape-yuzqaz8yyj2h6whv.jpg"},
+	{Name = "Rainy Neon", File = "UIBG_09.png", Id = 8598068650,
+		Url = "https://wallpapercave.com/wp/wp5313875.jpg"},
+	{Name = "Crimson Samurai", File = "UIBG_10.png", Id = 9794138570,
+		Url = "https://w0.peakpx.com/wallpaper/83/604/HD-wallpaper-darkness-red-sword-red-eye-red-dress-rose-wing-fantasy-moon-butterfly-blade-samurai-anime-anime-girl-weapon-long-hair-sword-star-female-wings-red-hair-abstract-girl-flower.jpg"},
+	{Name = "Catgirl Night", File = "UIBG_11.png", Id = 6594109832,
+		Url = "https://w0.peakpx.com/wallpaper/434/153/HD-wallpaper-anime-girl-catgirl-city-dark-night.jpg"},
+	{Name = "Lonely City", File = "UIBG_12.png", Id = 1117897387,
+		Url = "https://w0.peakpx.com/wallpaper/16/84/HD-wallpaper-anime-girl-city-dark-lonely-sad.jpg"},
+	{Name = "Dark Art", File = "UIBG_13.png", Id = 1280392000,
+		Url = "https://w0.peakpx.com/wallpaper/70/351/HD-wallpaper-dark-anime-girl-art-night.jpg"},
+	{Name = "Night Girl", File = "UIBG_14.png", Id = 6033191292,
+		Url = "https://w0.peakpx.com/wallpaper/315/598/HD-wallpaper-dark-anime-girl-night-dark-girl-art.jpg"},
+	{Name = "Guweiz City", File = "UIBG_15.png", Id = 5739060035,
+		Url = "https://w0.peakpx.com/wallpaper/634/96/HD-wallpaper-anime-2d-city-anime-girls-dark-face-guweiz.jpg"},
+	{Name = "Pastel Sky", File = "UIBG_16.png", Id = 6726922968,
+		Url = "https://mrwallpaper.com/images/high/aesthetic-anime-girl-pastel-sky-sf4fjuyx6us5d2l0.jpg"},
+	{Name = "Sheep Encounter", File = "UIBG_17.png", Id = 6239938337,
+		Url = "https://w0.peakpx.com/wallpaper/195/583/HD-wallpaper-sheep-encounter-anime-anime-girl-cute-kawaii-pastel.jpg"},
+	{Name = "Pastel Flowers", File = "UIBG_18.png", Id = 6239942849,
+		Url = "https://w0.peakpx.com/wallpaper/835/680/HD-wallpaper-pastel-girl-anime-avatar-colorful-cute-flowers-girl-pastel-pretty.jpg"},
+	{Name = "Crybaby Pink", File = "UIBG_19.png", Id = 995551519,
+		Url = "https://w0.peakpx.com/wallpaper/288/566/HD-wallpaper-anime-mel-martinez-melanie-martinez-cute-girl-pink-pastel-crybaby-colorful-sweet-artist-love.jpg"},
+	{Name = "Music Girl", File = "UIBG_20.png", Id = 6239914883,
+		Url = "https://w0.peakpx.com/wallpaper/964/525/HD-wallpaper-musical-girl-xd-cute-girl-anime-music-headphones-pastel.jpg"},
 }
 
 local UIBG_SCALE_MODES = {"Crop", "Fit", "Stretch", "Tile"}
@@ -591,6 +758,120 @@ local function ScaleTypeFromName(name)
 		return Enum.ScaleType.Tile
 	end
 	return Enum.ScaleType.Crop
+end
+
+--// ======================================================================
+--// IMG FOLDER ENGINE
+--//   Wallpapers are downloaded once from their source URL and cached in
+--//   the executor's  img/  folder, then loaded with getcustomasset so the
+--//   picture comes off the phone instead of a Roblox asset id.
+--// ======================================================================
+
+local WINDOW_RADIUS = 22
+local PANEL_RADIUS  = 16
+local IMG_FOLDER = "img"
+
+local GetCustomAsset =
+	(type(getcustomasset) == "function" and getcustomasset)
+	or (type(getsynasset) == "function" and getsynasset)
+	or (type(syn) == "table" and type(syn.getcustomasset) == "function" and syn.getcustomasset)
+	or nil
+
+local FileSystemOK =
+	type(writefile) == "function"
+	and type(isfile) == "function"
+	and GetCustomAsset ~= nil
+
+local function EnsureImgFolder()
+	if type(isfolder) == "function" and type(makefolder) == "function" then
+		local ok, exists = pcall(isfolder, IMG_FOLDER)
+		if ok and not exists then
+			pcall(makefolder, IMG_FOLDER)
+		end
+	end
+end
+
+local function ImgPath(wp)
+	return IMG_FOLDER .. "/" .. tostring(wp.File or "UIBG.png")
+end
+
+local function FileExists(path)
+	if type(isfile) ~= "function" then
+		return false
+	end
+	local ok, exists = pcall(isfile, path)
+	return ok and exists and true or false
+end
+
+--// GET that returns raw bytes (executor request first, HttpGet fallback)
+local function HttpGetBinary(url)
+	if RawRequest then
+		local ok, res = pcall(RawRequest, {Url = url, Method = "GET"})
+		if ok and type(res) == "table" and type(res.Body) == "string" and #res.Body > 2048 then
+			local status = tonumber(res.StatusCode) or 200
+			if status >= 200 and status < 300 then
+				return res.Body
+			end
+		end
+	end
+	local ok, body = pcall(function()
+		return game:HttpGet(url, true)
+	end)
+	if ok and type(body) == "string" and #body > 2048 then
+		return body
+	end
+	return nil
+end
+
+--// returns: assetString, isLocalFile
+local function WallpaperAsset(wp)
+	if not wp then
+		return nil, false
+	end
+	if FileSystemOK then
+		local path = ImgPath(wp)
+		if FileExists(path) then
+			local ok, asset = pcall(GetCustomAsset, path)
+			if ok and type(asset) == "string" and asset ~= "" then
+				return asset, true
+			end
+		end
+	end
+	if wp.Id then
+		return "rbxassetid://" .. tostring(wp.Id), false
+	end
+	return nil, false
+end
+
+--// downloads one wallpaper into img/ (returns true when the file is ready)
+local function CacheWallpaper(wp)
+	if not FileSystemOK or not wp or not wp.Url then
+		return false
+	end
+	local path = ImgPath(wp)
+	if FileExists(path) then
+		return true
+	end
+	EnsureImgFolder()
+	local data = HttpGetBinary(wp.Url)
+	if not data then
+		return false
+	end
+	local ok = pcall(writefile, path, data)
+	return ok and FileExists(path)
+end
+
+local function CachedCount()
+	if not FileSystemOK then
+		return 0
+	end
+	local n = 0
+	for _, wp in ipairs(WALLPAPERS) do
+		if FileExists(ImgPath(wp)) then
+			n = n + 1
+		end
+	end
+	return n
 end
 
 --// ======================================================================
@@ -648,8 +929,8 @@ local LoadString = (type(loadstring) == "function" and loadstring)
 --// ======================================================================
 
 local Library = {
-	Version = "V7",
-	VersionName = "Next-Gen",
+	Version = "V8",
+	VersionName = "Aurora",
 	Themes = Themes,
 }
 
@@ -664,6 +945,1599 @@ local GEMINI_MODEL_PRESETS = {
 	"gemini-1.5-flash",
 	"gemini-1.5-pro",
 }
+
+--// ======================================================================
+--// UNIVERSAL SUITE  (built in: aimbot, ESP, weapons, player, relocation)
+--//   Created automatically for every window unless you pass
+--//   UniversalSuite = false to CreateWindow, or call Window:LoadUniversalSuite()
+--// ======================================================================
+
+local function BuildUniversalSuite(Window)
+	--// ----------------------------------------------------------------------
+	--// 1. SERVICES / SHORTCUTS
+	--// ----------------------------------------------------------------------
+
+	local Players       = game:GetService("Players")
+	local RunService    = game:GetService("RunService")
+	local UIS           = game:GetService("UserInputService")
+	local Lighting      = game:GetService("Lighting")
+	local StarterGui    = game:GetService("StarterGui")
+	local TeleportSvc   = game:GetService("TeleportService")
+	local Stats         = game:FindService("Stats")
+
+	local LocalPlayer = Players.LocalPlayer
+	local Camera      = workspace.CurrentCamera
+	local Mouse       = LocalPlayer:GetMouse()
+
+	local HasDrawing    = (type(Drawing) == "table" and type(Drawing.new) == "function")
+	local MouseMoveRel  = (type(mousemoverel) == "function" and mousemoverel) or nil
+	local Mouse1Press   = (type(mouse1press) == "function" and mouse1press) or nil
+	local Mouse1Release = (type(mouse1release) == "function" and mouse1release) or nil
+	local SetClip       = (type(setclipboard) == "function" and setclipboard) or nil
+
+	--// ----------------------------------------------------------------------
+	--// 2. STATE
+	--// ----------------------------------------------------------------------
+
+	local S = {
+		-- aimbot
+		AimEnabled       = false,
+		AimMode          = "Camera Lock",   -- Camera Lock | Aim Assist
+		AimKeyHold       = true,            -- true = hold key, false = toggle
+		AimKey           = Enum.KeyCode.E,
+		AimActive        = false,           -- toggle-mode state
+		TargetPart       = "Head",          -- Head | Torso | Nearest | Random
+		Smoothing        = 0.18,            -- 0 = instant, 1 = molasses
+		FOV              = 160,
+		ShowFOV          = true,
+		FOVColor         = Color3.fromRGB(130, 110, 255),
+		WallCheck        = true,
+		TeamCheck        = true,
+		AliveCheck       = true,
+		MaxDistance      = 1500,
+		Prediction       = false,
+		PredictionAmount = 0.14,
+		StickyAim        = true,
+		SnapOnFire       = false,
+		FFA              = false,
+		StayBehind       = false,
+		StayBehindOffset = 4,
+
+		-- triggerbot
+		TriggerBot       = false,
+		TriggerDelay     = 0.08,
+		TriggerHoldTime  = 0.05,
+
+		-- esp
+		ESPEnabled       = false,
+		ESPBox           = true,
+		ESPName          = true,
+		ESPHealth        = true,
+		ESPDistance      = true,
+		ESPTracer        = false,
+		ESPSkeleton      = false,
+		ESPChams         = false,
+		ESPTeamColor     = true,
+		ESPMaxDistance   = 2000,
+		ESPEnemyColor    = Color3.fromRGB(255, 70, 70),
+		ESPAllyColor     = Color3.fromRGB(90, 255, 140),
+
+		-- weapons
+		UnlimitedAmmo    = false,
+		NoReload         = false,
+		NoRecoil         = false,
+		NoSpread         = false,
+		FastFire         = false,
+		FireRateScale    = 0.35,
+
+		-- player
+		WalkSpeed        = 16,
+		JumpPower        = 50,
+		CustomSpeed      = false,
+		CustomJump       = false,
+		InfiniteJump     = false,
+		NoClip           = false,
+		Flying           = false,
+		FlySpeed         = 60,
+		HitboxExpand     = false,
+		HitboxSize       = 6,
+		AntiAFK          = true,
+		Spinbot          = false,
+
+		ClickTP          = false,
+
+		-- world
+		FullBright       = false,
+		NoFog            = false,
+		XRay             = false,
+		FPSBoost         = false,
+		CameraFOV        = 70,
+	}
+
+	local Connections = {}
+	local Drawings = {}
+	local ESPObjects = {}
+	local Waypoints = {}
+	local Unloading = false
+
+	local function Bind(signal, fn)
+		local conn = signal:Connect(fn)
+		table.insert(Connections, conn)
+		return conn
+	end
+
+	local function Try(fn, ...)
+		local ok, err = pcall(fn, ...)
+		if not ok and not Unloading then
+			-- silent: a single odd game should never spam the console
+		end
+		return ok, err
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 3. NOTIFY SHIM (uses the host window)
+	--// ----------------------------------------------------------------------
+
+	local function Notify(title, text, ntype, dur)
+		Try(function()
+			Window:Notify(title, text, dur or 2.2, ntype or "Info")
+		end)
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 4. CORE HELPERS
+	--// ----------------------------------------------------------------------
+
+	local function GetChar(plr)
+		return plr and plr.Character
+	end
+
+	local function GetHum(plr)
+		local c = GetChar(plr)
+		return c and c:FindFirstChildOfClass("Humanoid")
+	end
+
+	local function GetRoot(plr)
+		local c = GetChar(plr)
+		return c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart)
+	end
+
+	local function IsAlive(plr)
+		local hum = GetHum(plr)
+		return hum ~= nil and hum.Health > 0
+	end
+
+	local function MyRoot()
+		return GetRoot(LocalPlayer)
+	end
+
+	local function TeamOk(plr)
+		if S.FFA or not S.TeamCheck then
+			return true
+		end
+		if not LocalPlayer.Team or not plr.Team then
+			return true
+		end
+		return LocalPlayer.Team ~= plr.Team
+	end
+
+	local function ShouldTarget(plr)
+		if not plr or plr == LocalPlayer then
+			return false
+		end
+		if not GetChar(plr) or not GetRoot(plr) then
+			return false
+		end
+		if S.AliveCheck and not IsAlive(plr) then
+			return false
+		end
+		return TeamOk(plr)
+	end
+
+	local function PartFor(plr)
+		local c = GetChar(plr)
+		if not c then
+			return nil
+		end
+		local mode = S.TargetPart
+		if mode == "Head" then
+			return c:FindFirstChild("Head") or GetRoot(plr)
+		elseif mode == "Torso" then
+			return c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or GetRoot(plr)
+		elseif mode == "Random" then
+			local pool = {"Head", "UpperTorso", "Torso", "HumanoidRootPart", "LeftHand", "RightHand"}
+			local pick = c:FindFirstChild(pool[math.random(1, #pool)])
+			return pick or GetRoot(plr)
+		end
+		-- Nearest: closest body part to the crosshair
+		local best, bestDist = nil, math.huge
+		local center = Camera.ViewportSize * 0.5
+		for _, part in ipairs(c:GetChildren()) do
+			if part:IsA("BasePart") then
+				local sp, on = Camera:WorldToViewportPoint(part.Position)
+				if on then
+					local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+					if d < bestDist then
+						best, bestDist = part, d
+					end
+				end
+			end
+		end
+		return best or GetRoot(plr)
+	end
+
+	--// newer clients use Exclude, older ones only have Blacklist
+	local EXCLUDE_FILTER
+	do
+		local ok, value = pcall(function()
+			return Enum.RaycastFilterType.Exclude
+		end)
+		if ok and value then
+			EXCLUDE_FILTER = value
+		else
+			EXCLUDE_FILTER = Enum.RaycastFilterType.Blacklist
+		end
+	end
+
+	local function IsVisible(part, plr)
+		if not S.WallCheck or not part then
+			return true
+		end
+		local params = RaycastParams.new()
+		params.FilterType = EXCLUDE_FILTER
+		params.FilterDescendantsInstances = {GetChar(LocalPlayer), GetChar(plr)}
+		params.IgnoreWater = true
+		local origin = Camera.CFrame.Position
+		local hit = workspace:Raycast(origin, part.Position - origin, params)
+		return hit == nil
+	end
+
+	local function PredictedPosition(part)
+		if not S.Prediction or not part then
+			return part and part.Position or Vector3.new()
+		end
+		local vel = part.AssemblyLinearVelocity or part.Velocity or Vector3.new()
+		return part.Position + (vel * S.PredictionAmount)
+	end
+
+	--// screen-space picker: closest enemy to the crosshair inside the FOV ring
+	local CurrentTarget = nil
+
+	local function AcquireTarget()
+		local center = Camera.ViewportSize * 0.5
+		local myRoot = MyRoot()
+		local best, bestScore = nil, math.huge
+
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if ShouldTarget(plr) then
+				local part = PartFor(plr)
+				if part then
+					local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+					if onScreen then
+						local screenDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+						local worldDist = myRoot and (myRoot.Position - part.Position).Magnitude or 0
+						if screenDist <= S.FOV and worldDist <= S.MaxDistance then
+							if IsVisible(part, plr) then
+								if screenDist < bestScore then
+									best, bestScore = plr, screenDist
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+
+		-- sticky aim: keep the old target while it stays valid and in FOV
+		if S.StickyAim and CurrentTarget and ShouldTarget(CurrentTarget) then
+			local part = PartFor(CurrentTarget)
+			if part then
+				local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+				if onScreen then
+					local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+					if d <= S.FOV * 1.25 then
+						return CurrentTarget
+					end
+				end
+			end
+		end
+
+		CurrentTarget = best
+		return best
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 5. FOV CIRCLE
+	--// ----------------------------------------------------------------------
+
+	local FOVCircle
+	if HasDrawing then
+		FOVCircle = Drawing.new("Circle")
+		FOVCircle.Thickness = 1.5
+		FOVCircle.NumSides = 90
+		FOVCircle.Filled = false
+		FOVCircle.Transparency = 0.9
+		FOVCircle.Visible = false
+		FOVCircle.Color = S.FOVColor
+		table.insert(Drawings, FOVCircle)
+	end
+
+	local function UpdateFOVCircle()
+		if not FOVCircle then
+			return
+		end
+		FOVCircle.Visible = S.ShowFOV and S.AimEnabled and not Unloading
+		FOVCircle.Radius = S.FOV
+		FOVCircle.Color = S.FOVColor
+		FOVCircle.Position = Camera.ViewportSize * 0.5
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 6. AIMBOT
+	--// ----------------------------------------------------------------------
+
+	local function AimKeyDown()
+		if not S.AimKeyHold then
+			return S.AimActive
+		end
+		if UIS:IsKeyDown(S.AimKey) then
+			return true
+		end
+		-- touch devices: aim while the player is holding the screen
+		if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+			return S.AimActive
+		end
+		return false
+	end
+
+	local function AimAt(part)
+		if not part then
+			return
+		end
+		local goalPos = PredictedPosition(part)
+
+		if S.AimMode == "Aim Assist" and MouseMoveRel then
+			-- soft pull: nudge the real mouse a fraction of the way each frame
+			local sp = Camera:WorldToViewportPoint(goalPos)
+			local center = Camera.ViewportSize * 0.5
+			local dx = (sp.X - center.X)
+			local dy = (sp.Y - center.Y)
+			local pull = 1 - math.clamp(S.Smoothing, 0, 0.95)
+			Try(MouseMoveRel, dx * pull * 0.35, dy * pull * 0.35)
+			return
+		end
+
+		local goal = CFrame.new(Camera.CFrame.Position, goalPos)
+		if S.Smoothing <= 0.01 then
+			Camera.CFrame = goal
+		else
+			local alpha = math.clamp(1 - S.Smoothing, 0.03, 1)
+			Camera.CFrame = Camera.CFrame:Lerp(goal, alpha)
+		end
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 7. ESP
+	--// ----------------------------------------------------------------------
+
+	local SKELETON_LINKS = {
+		{"Head", "UpperTorso"}, {"UpperTorso", "LowerTorso"},
+		{"UpperTorso", "LeftUpperArm"}, {"LeftUpperArm", "LeftLowerArm"}, {"LeftLowerArm", "LeftHand"},
+		{"UpperTorso", "RightUpperArm"}, {"RightUpperArm", "RightLowerArm"}, {"RightLowerArm", "RightHand"},
+		{"LowerTorso", "LeftUpperLeg"}, {"LeftUpperLeg", "LeftLowerLeg"}, {"LeftLowerLeg", "LeftFoot"},
+		{"LowerTorso", "RightUpperLeg"}, {"RightUpperLeg", "RightLowerLeg"}, {"RightLowerLeg", "RightFoot"},
+	}
+
+	local function NewDrawing(class, props)
+		if not HasDrawing then
+			return nil
+		end
+		local d = Drawing.new(class)
+		for k, v in pairs(props or {}) do
+			d[k] = v
+		end
+		d.Visible = false
+		table.insert(Drawings, d)
+		return d
+	end
+
+	local function CreateESP(plr)
+		if plr == LocalPlayer or ESPObjects[plr] then
+			return
+		end
+
+		local obj = {
+			Box        = NewDrawing("Square", {Thickness = 1, Filled = false, Transparency = 1, Color = S.ESPEnemyColor}),
+			BoxOutline = NewDrawing("Square", {Thickness = 3, Filled = false, Transparency = 0.5, Color = Color3.new(0, 0, 0)}),
+			Name       = NewDrawing("Text",   {Size = 13, Center = true, Outline = true, Color = Color3.new(1, 1, 1)}),
+			Info       = NewDrawing("Text",   {Size = 12, Center = true, Outline = true, Color = Color3.fromRGB(210, 210, 210)}),
+			HealthBar  = NewDrawing("Line",   {Thickness = 3, Color = Color3.fromRGB(80, 230, 120)}),
+			HealthBg   = NewDrawing("Line",   {Thickness = 3, Color = Color3.new(0, 0, 0), Transparency = 0.6}),
+			Tracer     = NewDrawing("Line",   {Thickness = 1, Color = S.ESPEnemyColor, Transparency = 0.8}),
+			Bones      = {},
+			Highlight  = nil,
+		}
+
+		for i = 1, #SKELETON_LINKS do
+			obj.Bones[i] = NewDrawing("Line", {Thickness = 1, Color = Color3.fromRGB(255, 255, 255), Transparency = 0.7})
+		end
+
+		ESPObjects[plr] = obj
+	end
+
+	local function HideESP(obj)
+		if not obj then
+			return
+		end
+		for _, key in ipairs({"Box", "BoxOutline", "Name", "Info", "HealthBar", "HealthBg", "Tracer"}) do
+			if obj[key] then
+				obj[key].Visible = false
+			end
+		end
+		for _, bone in ipairs(obj.Bones) do
+			if bone then
+				bone.Visible = false
+			end
+		end
+		if obj.Highlight then
+			obj.Highlight.Enabled = false
+		end
+	end
+
+	local function DestroyESP(plr)
+		local obj = ESPObjects[plr]
+		if not obj then
+			return
+		end
+		for _, key in ipairs({"Box", "BoxOutline", "Name", "Info", "HealthBar", "HealthBg", "Tracer"}) do
+			if obj[key] then
+				Try(function() obj[key]:Remove() end)
+			end
+		end
+		for _, bone in ipairs(obj.Bones) do
+			if bone then
+				Try(function() bone:Remove() end)
+			end
+		end
+		if obj.Highlight then
+			Try(function() obj.Highlight:Destroy() end)
+		end
+		ESPObjects[plr] = nil
+	end
+
+	local function ColorFor(plr)
+		if not S.ESPTeamColor then
+			return S.ESPEnemyColor
+		end
+		return TeamOk(plr) and S.ESPEnemyColor or S.ESPAllyColor
+	end
+
+	local function UpdateChams(plr, obj, enabled, color)
+		local char = GetChar(plr)
+		if not enabled or not char then
+			if obj.Highlight then
+				obj.Highlight.Enabled = false
+			end
+			return
+		end
+		if not obj.Highlight or obj.Highlight.Parent ~= char then
+			if obj.Highlight then
+				Try(function() obj.Highlight:Destroy() end)
+			end
+			local hl = Instance.new("Highlight")
+			hl.Name = "KM_Cham"
+			hl.FillTransparency = 0.62
+			hl.OutlineTransparency = 0
+			pcall(function()
+				hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			end)
+			hl.Parent = char
+			obj.Highlight = hl
+		end
+		obj.Highlight.Enabled = true
+		obj.Highlight.FillColor = color
+		obj.Highlight.OutlineColor = color
+	end
+
+	local function UpdateESP()
+		if not S.ESPEnabled then
+			for _, obj in pairs(ESPObjects) do
+				HideESP(obj)
+			end
+			return
+		end
+
+		local myRoot = MyRoot()
+		local viewport = Camera.ViewportSize
+
+		for plr, obj in pairs(ESPObjects) do
+			local char = GetChar(plr)
+			local root = GetRoot(plr)
+			local hum  = GetHum(plr)
+
+			if not char or not root or not hum or hum.Health <= 0 then
+				HideESP(obj)
+			else
+				local dist = myRoot and (myRoot.Position - root.Position).Magnitude or 0
+				if dist > S.ESPMaxDistance then
+					HideESP(obj)
+				else
+					local rootPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+					if not onScreen then
+						HideESP(obj)
+					else
+						local color = ColorFor(plr)
+						local headTop = Camera:WorldToViewportPoint(root.Position + Vector3.new(0, 3.2, 0))
+						local legBot  = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3.6, 0))
+						local height  = math.abs(headTop.Y - legBot.Y)
+						local width   = height / 1.9
+						local left    = rootPos.X - width / 2
+						local top     = rootPos.Y - height / 2
+
+						-- box
+						if S.ESPBox and obj.Box then
+							obj.BoxOutline.Size = Vector2.new(width, height)
+							obj.BoxOutline.Position = Vector2.new(left, top)
+							obj.BoxOutline.Visible = true
+							obj.Box.Size = Vector2.new(width, height)
+							obj.Box.Position = Vector2.new(left, top)
+							obj.Box.Color = color
+							obj.Box.Visible = true
+						else
+							if obj.Box then obj.Box.Visible = false end
+							if obj.BoxOutline then obj.BoxOutline.Visible = false end
+						end
+
+						-- name
+						if S.ESPName and obj.Name then
+							obj.Name.Text = plr.DisplayName ~= "" and plr.DisplayName or plr.Name
+							obj.Name.Position = Vector2.new(rootPos.X, top - 16)
+							obj.Name.Color = color
+							obj.Name.Visible = true
+						elseif obj.Name then
+							obj.Name.Visible = false
+						end
+
+						-- distance + health text
+						if S.ESPDistance and obj.Info then
+							obj.Info.Text = string.format("%dm  |  %d hp", math.floor(dist), math.floor(hum.Health))
+							obj.Info.Position = Vector2.new(rootPos.X, top + height + 2)
+							obj.Info.Visible = true
+						elseif obj.Info then
+							obj.Info.Visible = false
+						end
+
+						-- health bar
+						if S.ESPHealth and obj.HealthBar then
+							local pct = math.clamp(hum.Health / math.max(1, hum.MaxHealth), 0, 1)
+							local barX = left - 6
+							obj.HealthBg.From = Vector2.new(barX, top)
+							obj.HealthBg.To = Vector2.new(barX, top + height)
+							obj.HealthBg.Visible = true
+							obj.HealthBar.From = Vector2.new(barX, top + height)
+							obj.HealthBar.To = Vector2.new(barX, top + height - (height * pct))
+							obj.HealthBar.Color = Color3.fromRGB(255 - math.floor(205 * pct), 60 + math.floor(170 * pct), 90)
+							obj.HealthBar.Visible = true
+						else
+							if obj.HealthBar then obj.HealthBar.Visible = false end
+							if obj.HealthBg then obj.HealthBg.Visible = false end
+						end
+
+						-- tracer
+						if S.ESPTracer and obj.Tracer then
+							obj.Tracer.From = Vector2.new(viewport.X / 2, viewport.Y)
+							obj.Tracer.To = Vector2.new(rootPos.X, top + height)
+							obj.Tracer.Color = color
+							obj.Tracer.Visible = true
+						elseif obj.Tracer then
+							obj.Tracer.Visible = false
+						end
+
+						-- skeleton
+						if S.ESPSkeleton then
+							for i, link in ipairs(SKELETON_LINKS) do
+								local bone = obj.Bones[i]
+								local a = char:FindFirstChild(link[1])
+								local b = char:FindFirstChild(link[2])
+								if bone and a and b then
+									local pa, va = Camera:WorldToViewportPoint(a.Position)
+									local pb, vb = Camera:WorldToViewportPoint(b.Position)
+									if va and vb then
+										bone.From = Vector2.new(pa.X, pa.Y)
+										bone.To = Vector2.new(pb.X, pb.Y)
+										bone.Color = color
+										bone.Visible = true
+									else
+										bone.Visible = false
+									end
+								elseif bone then
+									bone.Visible = false
+								end
+							end
+						else
+							for _, bone in ipairs(obj.Bones) do
+								if bone then bone.Visible = false end
+							end
+						end
+
+						UpdateChams(plr, obj, S.ESPChams, color)
+					end
+				end
+			end
+		end
+	end
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		CreateESP(plr)
+	end
+	Bind(Players.PlayerAdded, CreateESP)
+	Bind(Players.PlayerRemoving, DestroyESP)
+
+	--// ----------------------------------------------------------------------
+	--// 8. WEAPON MODULE (generic value patcher - works in most shooters)
+	--// ----------------------------------------------------------------------
+
+	local AMMO_NAMES  = {"Ammo", "AmmoCount", "CurrentAmmo", "Bullets", "Rounds", "Clip", "ClipAmmo", "MagAmmo", "StoredAmmo"}
+	local MAX_NAMES   = {"MaxAmmo", "ClipSize", "MagSize", "MaxClip", "AmmoMax"}
+	local RELOAD_NAMES = {"Reloading", "IsReloading", "Reload"}
+	local RECOIL_NAMES = {"Recoil", "RecoilPower", "CameraRecoil", "Kick", "RecoilAmount"}
+	local SPREAD_NAMES = {"Spread", "Bloom", "Inaccuracy", "SpreadAmount", "Accuracy"}
+	local RATE_NAMES   = {"FireRate", "Firerate", "RPM", "ShootDelay", "Cooldown", "Delay"}
+
+	local function InList(name, list)
+		for _, n in ipairs(list) do
+			if name == n then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function ToolRoots()
+		local out = {}
+		local char = GetChar(LocalPlayer)
+		if char then
+			for _, t in ipairs(char:GetChildren()) do
+				if t:IsA("Tool") then
+					table.insert(out, t)
+				end
+			end
+		end
+		local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+		if bp then
+			for _, t in ipairs(bp:GetChildren()) do
+				if t:IsA("Tool") then
+					table.insert(out, t)
+				end
+			end
+		end
+		return out
+	end
+
+	local BaseRates = {}
+
+	local function PatchWeapons()
+		if not (S.UnlimitedAmmo or S.NoReload or S.NoRecoil or S.NoSpread or S.FastFire) then
+			return
+		end
+		for _, tool in ipairs(ToolRoots()) do
+			for _, v in ipairs(tool:GetDescendants()) do
+				local cls = v.ClassName
+				if cls == "NumberValue" or cls == "IntValue" then
+					if S.UnlimitedAmmo and InList(v.Name, AMMO_NAMES) then
+						Try(function() v.Value = 9999 end)
+					elseif S.UnlimitedAmmo and InList(v.Name, MAX_NAMES) then
+						Try(function() v.Value = 9999 end)
+					elseif S.NoRecoil and InList(v.Name, RECOIL_NAMES) then
+						Try(function() v.Value = 0 end)
+					elseif S.NoSpread and InList(v.Name, SPREAD_NAMES) then
+						Try(function() v.Value = 0 end)
+					elseif S.FastFire and InList(v.Name, RATE_NAMES) then
+						if BaseRates[v] == nil then
+							BaseRates[v] = v.Value
+						end
+						Try(function() v.Value = math.max(0.01, BaseRates[v] * S.FireRateScale) end)
+					end
+				elseif cls == "BoolValue" then
+					if S.NoReload and InList(v.Name, RELOAD_NAMES) then
+						Try(function() v.Value = false end)
+					end
+				elseif cls == "ModuleScript" then
+					-- most weapon configs live in a settings module; try the common
+					-- "Settings"/"Config" table shape without breaking anything
+					if S.NoRecoil or S.NoSpread or S.UnlimitedAmmo then
+						Try(function()
+							local cfg = require(v)
+							if type(cfg) == "table" then
+								if S.NoRecoil then
+									if cfg.Recoil ~= nil then cfg.Recoil = 0 end
+									if cfg.CameraRecoil ~= nil then cfg.CameraRecoil = 0 end
+								end
+								if S.NoSpread then
+									if cfg.Spread ~= nil then cfg.Spread = 0 end
+									if cfg.Bloom ~= nil then cfg.Bloom = 0 end
+								end
+								if S.UnlimitedAmmo then
+									if cfg.Ammo ~= nil then cfg.Ammo = 9999 end
+									if cfg.MaxAmmo ~= nil then cfg.MaxAmmo = 9999 end
+									if cfg.StoredAmmo ~= nil then cfg.StoredAmmo = 9999 end
+								end
+							end
+						end)
+					end
+				end
+			end
+		end
+	end
+
+	local function RestoreRates()
+		for v, base in pairs(BaseRates) do
+			Try(function()
+				if v and v.Parent then
+					v.Value = base
+				end
+			end)
+		end
+		BaseRates = {}
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 9. PLAYER MODULE
+	--// ----------------------------------------------------------------------
+
+	local FlyVelocity, FlyGyro
+	local OriginalHitboxSizes = {}
+
+	local function StopFly()
+		if FlyVelocity then Try(function() FlyVelocity:Destroy() end) end
+		if FlyGyro then Try(function() FlyGyro:Destroy() end) end
+		FlyVelocity, FlyGyro = nil, nil
+	end
+
+	local function StartFly()
+		StopFly()
+		local root = MyRoot()
+		if not root then
+			return
+		end
+		FlyVelocity = Instance.new("BodyVelocity")
+		FlyVelocity.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+		FlyVelocity.Velocity = Vector3.new()
+		FlyVelocity.Parent = root
+
+		FlyGyro = Instance.new("BodyGyro")
+		FlyGyro.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+		FlyGyro.P = 9000
+		FlyGyro.CFrame = Camera.CFrame
+		FlyGyro.Parent = root
+	end
+
+	local function FlyStep()
+		if not S.Flying or not FlyVelocity or not FlyGyro then
+			return
+		end
+		local dir = Vector3.new()
+		if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + Camera.CFrame.LookVector end
+		if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - Camera.CFrame.LookVector end
+		if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - Camera.CFrame.RightVector end
+		if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + Camera.CFrame.RightVector end
+		if UIS:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
+		if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.new(0, 1, 0) end
+
+		-- mobile: fly forward while the humanoid has a move direction
+		local hum = GetHum(LocalPlayer)
+		if dir.Magnitude == 0 and hum and hum.MoveDirection.Magnitude > 0 then
+			dir = hum.MoveDirection
+		end
+
+		FlyGyro.CFrame = Camera.CFrame
+		FlyVelocity.Velocity = (dir.Magnitude > 0 and dir.Unit or Vector3.new()) * S.FlySpeed
+	end
+
+	local function ApplyNoClip()
+		if not S.NoClip then
+			return
+		end
+		local char = GetChar(LocalPlayer)
+		if not char then
+			return
+		end
+		for _, part in ipairs(char:GetDescendants()) do
+			if part:IsA("BasePart") and part.CanCollide then
+				part.CanCollide = false
+			end
+		end
+	end
+
+	local function ApplyHitbox()
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LocalPlayer then
+				local char = GetChar(plr)
+				local head = char and char:FindFirstChild("Head")
+				if head then
+					if S.HitboxExpand then
+						if OriginalHitboxSizes[head] == nil then
+							OriginalHitboxSizes[head] = head.Size
+						end
+						Try(function()
+							head.Size = Vector3.new(S.HitboxSize, S.HitboxSize, S.HitboxSize)
+							head.Transparency = 0.65
+							head.CanCollide = false
+							head.Massless = true
+						end)
+					elseif OriginalHitboxSizes[head] then
+						Try(function()
+							head.Size = OriginalHitboxSizes[head]
+							head.Transparency = 0
+						end)
+						OriginalHitboxSizes[head] = nil
+					end
+				end
+			end
+		end
+	end
+
+	local function ApplyMovement()
+		local hum = GetHum(LocalPlayer)
+		if not hum then
+			return
+		end
+		if S.CustomSpeed then
+			hum.WalkSpeed = S.WalkSpeed
+		end
+		if S.CustomJump then
+			if hum.UseJumpPower ~= nil then
+				hum.UseJumpPower = true
+			end
+			hum.JumpPower = S.JumpPower
+		end
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 10. WORLD MODULE
+	--// ----------------------------------------------------------------------
+
+	local WorldBackup = {
+		Brightness = Lighting.Brightness,
+		ClockTime = Lighting.ClockTime,
+		FogEnd = Lighting.FogEnd,
+		FogStart = Lighting.FogStart,
+		GlobalShadows = Lighting.GlobalShadows,
+		Ambient = Lighting.Ambient,
+		OutdoorAmbient = Lighting.OutdoorAmbient,
+	}
+
+	local XRayBackup = {}
+
+	local function ApplyFullBright(on)
+		Try(function()
+			if on then
+				Lighting.Brightness = 3
+				Lighting.ClockTime = 14
+				Lighting.GlobalShadows = false
+				Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+				Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+			else
+				Lighting.Brightness = WorldBackup.Brightness
+				Lighting.ClockTime = WorldBackup.ClockTime
+				Lighting.GlobalShadows = WorldBackup.GlobalShadows
+				Lighting.Ambient = WorldBackup.Ambient
+				Lighting.OutdoorAmbient = WorldBackup.OutdoorAmbient
+			end
+		end)
+	end
+
+	local function ApplyNoFog(on)
+		Try(function()
+			if on then
+				Lighting.FogEnd = 1e6
+				Lighting.FogStart = 1e6
+				for _, v in ipairs(Lighting:GetDescendants()) do
+					if v:IsA("Atmosphere") then
+						v.Density = 0
+					end
+				end
+			else
+				Lighting.FogEnd = WorldBackup.FogEnd
+				Lighting.FogStart = WorldBackup.FogStart
+			end
+		end)
+	end
+
+	local function ApplyXRay(on)
+		Try(function()
+			if on then
+				for _, v in ipairs(workspace:GetDescendants()) do
+					if v:IsA("BasePart") and not v:IsDescendantOf(GetChar(LocalPlayer)) then
+						local isChar = v.Parent and Players:GetPlayerFromCharacter(v.Parent)
+						if not isChar and v.Transparency < 1 then
+							XRayBackup[v] = v.Transparency
+							v.Transparency = 0.72
+						end
+					end
+				end
+			else
+				for part, t in pairs(XRayBackup) do
+					if part and part.Parent then
+						part.Transparency = t
+					end
+				end
+				XRayBackup = {}
+			end
+		end)
+	end
+
+	local function ApplyFPSBoost(on)
+		Try(function()
+			if not on then
+				return
+			end
+			for _, v in ipairs(workspace:GetDescendants()) do
+				if v:IsA("BasePart") then
+					v.Material = Enum.Material.SmoothPlastic
+					v.Reflectance = 0
+				elseif v:IsA("Decal") or v:IsA("Texture") then
+					v.Transparency = 1
+				elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
+					v.Enabled = false
+				end
+			end
+			for _, v in ipairs(Lighting:GetDescendants()) do
+				if v:IsA("BlurEffect") or v:IsA("SunRaysEffect") or v:IsA("DepthOfFieldEffect") or v:IsA("BloomEffect") then
+					v.Enabled = false
+				end
+			end
+			settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+		end)
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 11. MAIN LOOPS (exactly three, all guarded)
+	--// ----------------------------------------------------------------------
+
+	local lastTrigger = 0
+
+	Bind(RunService.RenderStepped, function()
+		if Unloading then
+			return
+		end
+		Camera = workspace.CurrentCamera or Camera
+
+		UpdateFOVCircle()
+
+		-- aimbot
+		if S.AimEnabled and AimKeyDown() then
+			local target = AcquireTarget()
+			if target then
+				local part = PartFor(target)
+				AimAt(part)
+				if S.StayBehind then
+					local myRoot, theirRoot = MyRoot(), GetRoot(target)
+					if myRoot and theirRoot then
+						myRoot.CFrame = theirRoot.CFrame * CFrame.new(0, 0, S.StayBehindOffset)
+					end
+				end
+			end
+		else
+			if not S.StickyAim then
+				CurrentTarget = nil
+			end
+		end
+
+		-- triggerbot
+		if S.TriggerBot and Mouse1Press and Mouse1Release and os.clock() - lastTrigger > S.TriggerDelay then
+			local hitPlr = nil
+			local target = Mouse.Target
+			if target then
+				local model = target:FindFirstAncestorOfClass("Model")
+				hitPlr = model and Players:GetPlayerFromCharacter(model)
+			end
+			if hitPlr and ShouldTarget(hitPlr) then
+				lastTrigger = os.clock()
+				task.spawn(function()
+					Try(Mouse1Press)
+					task.wait(S.TriggerHoldTime)
+					Try(Mouse1Release)
+				end)
+			end
+		end
+
+		-- esp
+		UpdateESP()
+
+		-- fly / noclip / spinbot
+		FlyStep()
+		ApplyNoClip()
+		if S.Spinbot then
+			local root = MyRoot()
+			if root then
+				root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, math.rad((tick() * 900) % 360), 0)
+			end
+		end
+	end)
+
+	-- slower housekeeping loop: weapons, hitboxes, movement values
+	task.spawn(function()
+		while not Unloading do
+			Try(PatchWeapons)
+			Try(ApplyHitbox)
+			Try(ApplyMovement)
+			task.wait(0.25)
+		end
+	end)
+
+	-- infinite jump
+	Bind(UIS.JumpRequest, function()
+		if S.InfiniteJump and not Unloading then
+			local hum = GetHum(LocalPlayer)
+			if hum then
+				hum:ChangeState(Enum.HumanoidStateType.Jumping)
+			end
+		end
+	end)
+
+	-- aim key (toggle mode) + snap on fire
+	Bind(UIS.InputBegan, function(input, gp)
+		if gp or Unloading then
+			return
+		end
+		if input.KeyCode == S.AimKey and not S.AimKeyHold then
+			S.AimActive = not S.AimActive
+			Notify("Aimbot", S.AimActive and "Aim locked ON" or "Aim locked OFF", S.AimActive and "Success" or "Info", 1.4)
+		end
+		if S.SnapOnFire and input.UserInputType == Enum.UserInputType.MouseButton1 and S.AimEnabled then
+			local target = AcquireTarget()
+			if target then
+				local part = PartFor(target)
+				if part then
+					Camera.CFrame = CFrame.new(Camera.CFrame.Position, PredictedPosition(part))
+				end
+			end
+		end
+		if input.UserInputType == Enum.UserInputType.Touch and S.AimEnabled and S.AimKeyHold then
+			S.AimActive = true
+		end
+	end)
+
+	Bind(UIS.InputEnded, function(input)
+		if input.UserInputType == Enum.UserInputType.Touch and S.AimKeyHold then
+			S.AimActive = false
+		end
+	end)
+
+	-- anti-AFK
+	Bind(LocalPlayer.Idled, function()
+		if not S.AntiAFK or Unloading then
+			return
+		end
+		Try(function()
+			local vu = game:GetService("VirtualUser")
+			vu:CaptureController()
+			vu:ClickButton2(Vector2.new())
+		end)
+	end)
+
+	-- respawn housekeeping
+	Bind(LocalPlayer.CharacterAdded, function()
+		task.wait(1)
+		if Unloading then
+			return
+		end
+		if S.Flying then
+			StartFly()
+		end
+		ApplyMovement()
+	end)
+
+	--// ----------------------------------------------------------------------
+	--// 12. UI · AIMBOT TAB
+	--// ----------------------------------------------------------------------
+
+	local AimTab = Window:CreateTab("Aimbot", {Icon = "◎", Order = 9001})
+
+	local AimMain = AimTab:CreateSection("Targeting")
+	AimMain:Toggle("Enable Aimbot", false, function(v)
+		S.AimEnabled = v
+		UpdateFOVCircle()
+		Notify("Aimbot", v and "Aimbot armed." or "Aimbot disabled.", v and "Success" or "Info", 1.6)
+	end)
+	AimMain:Dropdown("Aim Mode", {"Camera Lock", "Aim Assist"}, S.AimMode, function(v)
+		S.AimMode = v
+		if v == "Aim Assist" and not MouseMoveRel then
+			Notify("Aim Assist", "This executor has no mousemoverel - falling back to Camera Lock.", "Warning", 3)
+			S.AimMode = "Camera Lock"
+		end
+	end)
+	AimMain:Dropdown("Target Part", {"Head", "Torso", "Nearest", "Random"}, S.TargetPart, function(v)
+		S.TargetPart = v
+	end)
+	AimMain:Keybind("Aim Key", S.AimKey, function(key)
+		S.AimKey = key
+	end)
+	AimMain:Toggle("Hold Key (off = toggle)", true, function(v)
+		S.AimKeyHold = v
+		S.AimActive = false
+	end)
+	AimMain:Slider("Smoothing", 0, 0.95, S.Smoothing, function(v)
+		S.Smoothing = v
+	end, 0.01)
+	AimMain:Slider("FOV Radius", 20, 600, S.FOV, function(v)
+		S.FOV = v
+		UpdateFOVCircle()
+	end, 5)
+	AimMain:Slider("Max Distance", 100, 5000, S.MaxDistance, function(v)
+		S.MaxDistance = v
+	end, 50)
+
+	local AimFilters = AimTab:CreateSection("Filters & Checks")
+	AimFilters:Toggle("Wall Check", true, function(v) S.WallCheck = v end)
+	AimFilters:Toggle("Team Check", true, function(v) S.TeamCheck = v end)
+	AimFilters:Toggle("Alive Check", true, function(v) S.AliveCheck = v end)
+	AimFilters:Toggle("Free For All (ignore teams)", false, function(v) S.FFA = v end)
+	AimFilters:Toggle("Sticky Aim", true, function(v) S.StickyAim = v end)
+
+	local AimExtra = AimTab:CreateSection("Advanced")
+	AimExtra:Toggle("Prediction (lead moving targets)", false, function(v) S.Prediction = v end)
+	AimExtra:Slider("Prediction Amount", 0, 0.5, S.PredictionAmount, function(v) S.PredictionAmount = v end, 0.01)
+	AimExtra:Toggle("Snap On Fire", false, function(v) S.SnapOnFire = v end)
+	AimExtra:Toggle("Show FOV Circle", true, function(v)
+		S.ShowFOV = v
+		UpdateFOVCircle()
+	end)
+	AimExtra:ColorPicker("FOV Circle Colour", S.FOVColor, function(c)
+		S.FOVColor = c
+		UpdateFOVCircle()
+	end)
+	AimExtra:Toggle("Global Stay Behind", false, function(v)
+		S.StayBehind = v
+		if v then
+			Notify("Stay Behind", "You will be glued behind your target.", "Warning", 2.5)
+		end
+	end)
+	AimExtra:Slider("Stay Behind Offset", 2, 12, S.StayBehindOffset, function(v) S.StayBehindOffset = v end, 1)
+
+	local TriggerSec = AimTab:CreateSection("Triggerbot")
+	if Mouse1Press and Mouse1Release then
+		TriggerSec:Toggle("Enable Triggerbot", false, function(v) S.TriggerBot = v end)
+		TriggerSec:Slider("Reaction Delay (s)", 0, 0.5, S.TriggerDelay, function(v) S.TriggerDelay = v end, 0.01)
+		TriggerSec:Slider("Click Hold (s)", 0.01, 0.3, S.TriggerHoldTime, function(v) S.TriggerHoldTime = v end, 0.01)
+	else
+		TriggerSec:Info("Triggerbot needs mouse1press / mouse1release support.")
+	end
+
+	--// ----------------------------------------------------------------------
+	--// 13. UI · VISUALS TAB
+	--// ----------------------------------------------------------------------
+
+	local ESPTab = Window:CreateTab("Visuals", {Icon = "◇", Order = 9002})
+
+	local ESPMain = ESPTab:CreateSection("ESP")
+	if not HasDrawing then
+		ESPMain:Info("No Drawing API here - only Chams (Highlight) will work.")
+	end
+	ESPMain:Toggle("Enable ESP", false, function(v)
+		S.ESPEnabled = v
+		if not v then
+			for _, obj in pairs(ESPObjects) do
+				HideESP(obj)
+			end
+		end
+	end)
+	ESPMain:Toggle("Boxes", true, function(v) S.ESPBox = v end)
+	ESPMain:Toggle("Names", true, function(v) S.ESPName = v end)
+	ESPMain:Toggle("Health Bars", true, function(v) S.ESPHealth = v end)
+	ESPMain:Toggle("Distance + HP Text", true, function(v) S.ESPDistance = v end)
+	ESPMain:Toggle("Tracers", false, function(v) S.ESPTracer = v end)
+	ESPMain:Toggle("Skeletons", false, function(v) S.ESPSkeleton = v end)
+	ESPMain:Toggle("Chams (Highlight)", false, function(v)
+		S.ESPChams = v
+		if not v then
+			for _, obj in pairs(ESPObjects) do
+				if obj.Highlight then
+					obj.Highlight.Enabled = false
+				end
+			end
+		end
+	end)
+
+	local ESPStyle = ESPTab:CreateSection("ESP Style")
+	ESPStyle:Toggle("Team Colours", true, function(v) S.ESPTeamColor = v end)
+	ESPStyle:ColorPicker("Enemy Colour", S.ESPEnemyColor, function(c) S.ESPEnemyColor = c end)
+	ESPStyle:ColorPicker("Ally Colour", S.ESPAllyColor, function(c) S.ESPAllyColor = c end)
+	ESPStyle:Slider("ESP Max Distance", 100, 5000, S.ESPMaxDistance, function(v) S.ESPMaxDistance = v end, 50)
+
+	local WorldSec = ESPTab:CreateSection("World Visuals")
+	WorldSec:Toggle("Full Bright", false, function(v)
+		S.FullBright = v
+		ApplyFullBright(v)
+	end)
+	WorldSec:Toggle("No Fog", false, function(v)
+		S.NoFog = v
+		ApplyNoFog(v)
+	end)
+	WorldSec:Toggle("X-Ray Walls", false, function(v)
+		S.XRay = v
+		ApplyXRay(v)
+	end)
+	WorldSec:Toggle("FPS Boost (one-shot)", false, function(v)
+		S.FPSBoost = v
+		if v then
+			ApplyFPSBoost(true)
+			Notify("FPS Boost", "Textures and effects stripped.", "Success", 2)
+		end
+	end)
+	WorldSec:Slider("Camera FOV", 40, 120, S.CameraFOV, function(v)
+		S.CameraFOV = v
+		Try(function() Camera.FieldOfView = v end)
+	end, 1)
+
+	--// ----------------------------------------------------------------------
+	--// 14. UI · WEAPONS TAB
+	--// ----------------------------------------------------------------------
+
+	local GunTab = Window:CreateTab("Weapons", {Icon = "⌖", Order = 9003})
+
+	local GunSec = GunTab:CreateSection("Ammo & Recoil")
+	GunSec:Info("Generic patcher: scans your tools for ammo/recoil/spread values.")
+	GunSec:Toggle("Unlimited Ammo", false, function(v)
+		S.UnlimitedAmmo = v
+		if v then PatchWeapons() end
+	end)
+	GunSec:Toggle("No Reload", false, function(v)
+		S.NoReload = v
+		if v then PatchWeapons() end
+	end)
+	GunSec:Toggle("No Recoil", false, function(v)
+		S.NoRecoil = v
+		if v then PatchWeapons() end
+	end)
+	GunSec:Toggle("No Spread", false, function(v)
+		S.NoSpread = v
+		if v then PatchWeapons() end
+	end)
+	GunSec:Toggle("Fast Fire Rate", false, function(v)
+		S.FastFire = v
+		if v then
+			PatchWeapons()
+		else
+			RestoreRates()
+		end
+	end)
+	GunSec:Slider("Fire Rate Scale", 0.05, 1, S.FireRateScale, function(v)
+		S.FireRateScale = v
+		RestoreRates()
+		if S.FastFire then PatchWeapons() end
+	end, 0.05)
+	GunSec:Button("Force Re-Patch Weapons", function()
+		PatchWeapons()
+		Notify("Weapons", "Weapon values re-patched.", "Success", 1.6)
+	end, {Icon = "R"})
+
+	--// ----------------------------------------------------------------------
+	--// 15. UI · PLAYER TAB
+	--// ----------------------------------------------------------------------
+
+	local PlayerTab = Window:CreateTab("Player", {Icon = "☗", Order = 9004})
+
+	local MoveSec = PlayerTab:CreateSection("Movement")
+	MoveSec:Toggle("Custom Walk Speed", false, function(v)
+		S.CustomSpeed = v
+		if not v then
+			local hum = GetHum(LocalPlayer)
+			if hum then hum.WalkSpeed = 16 end
+		end
+	end)
+	MoveSec:Slider("Walk Speed", 16, 250, S.WalkSpeed, function(v) S.WalkSpeed = v end, 1)
+	MoveSec:Toggle("Custom Jump Power", false, function(v)
+		S.CustomJump = v
+		if not v then
+			local hum = GetHum(LocalPlayer)
+			if hum then hum.JumpPower = 50 end
+		end
+	end)
+	MoveSec:Slider("Jump Power", 50, 350, S.JumpPower, function(v) S.JumpPower = v end, 5)
+	MoveSec:Toggle("Infinite Jump", false, function(v) S.InfiniteJump = v end)
+	MoveSec:Toggle("NoClip", false, function(v)
+		S.NoClip = v
+		if not v then
+			local char = GetChar(LocalPlayer)
+			if char then
+				for _, part in ipairs(char:GetDescendants()) do
+					if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+						part.CanCollide = true
+					end
+				end
+			end
+		end
+	end)
+	MoveSec:Toggle("Fly", false, function(v)
+		S.Flying = v
+		if v then
+			StartFly()
+			Notify("Fly", "WASD + Space/Ctrl, or the mobile stick.", "Info", 2.5)
+		else
+			StopFly()
+		end
+	end)
+	MoveSec:Slider("Fly Speed", 20, 300, S.FlySpeed, function(v) S.FlySpeed = v end, 5)
+
+	local CombatSec = PlayerTab:CreateSection("Combat Utility")
+	CombatSec:Toggle("Hitbox Expander (heads)", false, function(v)
+		S.HitboxExpand = v
+		ApplyHitbox()
+		if v then
+			Notify("Hitbox", "Enemy heads enlarged - very obvious to other players.", "Warning", 3)
+		end
+	end)
+	CombatSec:Slider("Hitbox Size", 2, 20, S.HitboxSize, function(v) S.HitboxSize = v end, 1)
+	CombatSec:Toggle("Spinbot", false, function(v) S.Spinbot = v end)
+	CombatSec:Toggle("Anti-AFK", true, function(v) S.AntiAFK = v end)
+	CombatSec:Button("Reset Character", function()
+		local hum = GetHum(LocalPlayer)
+		if hum then
+			hum.Health = 0
+		end
+	end, {Icon = "!"})
+
+	--// ----------------------------------------------------------------------
+	--// 16. UI · RELOCATION TAB
+	--// ----------------------------------------------------------------------
+
+	local TPTab = Window:CreateTab("Relocation", {Icon = "➤", Order = 9005})
+
+	local TPSec = TPTab:CreateSection("Teleport")
+
+	local function PlayerNames()
+		local out = {}
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LocalPlayer then
+				table.insert(out, plr.Name)
+			end
+		end
+		if #out == 0 then
+			table.insert(out, "(no other players)")
+		end
+		return out
+	end
+
+	local selectedPlayer = nil
+	local playerDrop = TPSec:Dropdown("Target Player", PlayerNames(), nil, function(v)
+		selectedPlayer = v
+	end)
+
+	TPSec:Button("Refresh Player List", function()
+		Try(function()
+			playerDrop.Refresh(PlayerNames(), true)
+		end)
+		Notify("Relocation", "Player list refreshed.", "Info", 1.4)
+	end, {Icon = "R"})
+
+	TPSec:Button("Teleport To Selected", function()
+		local myRoot = MyRoot()
+		local plr = selectedPlayer and Players:FindFirstChild(selectedPlayer)
+		local theirRoot = plr and GetRoot(plr)
+		if myRoot and theirRoot then
+			myRoot.CFrame = theirRoot.CFrame * CFrame.new(0, 3, 3)
+		else
+			Notify("Relocation", "Pick a valid player first.", "Warning", 2)
+		end
+	end, {Icon = "T"})
+
+	TPSec:Button("Teleport To Nearest Enemy", function()
+		local myRoot = MyRoot()
+		if not myRoot then
+			return
+		end
+		local best, bestDist = nil, math.huge
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if ShouldTarget(plr) then
+				local root = GetRoot(plr)
+				if root then
+					local d = (myRoot.Position - root.Position).Magnitude
+					if d < bestDist then
+						best, bestDist = root, d
+					end
+				end
+			end
+		end
+		if best then
+			myRoot.CFrame = best.CFrame * CFrame.new(0, 3, 3)
+			Notify("Relocation", string.format("Teleported %d studs.", math.floor(bestDist)), "Success", 1.8)
+		else
+			Notify("Relocation", "No valid target found.", "Warning", 2)
+		end
+	end, {Icon = "N"})
+
+	TPSec:Toggle("Click Teleport (Ctrl + Click)", false, function(v)
+		S.ClickTP = v
+	end)
+
+	Bind(UIS.InputBegan, function(input, gp)
+		if gp or Unloading or not S.ClickTP then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 and UIS:IsKeyDown(Enum.KeyCode.LeftControl) then
+			local myRoot = MyRoot()
+			if myRoot and Mouse.Hit then
+				myRoot.CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(0, 4, 0))
+			end
+		end
+	end)
+
+	local WaypointSec = TPTab:CreateSection("Waypoints")
+	local waypointName = "Spot 1"
+	WaypointSec:Input("Waypoint Name", {
+		Placeholder = "Name this position",
+		Default = waypointName,
+		Callback = function(txt)
+			if txt ~= "" then
+				waypointName = txt
+			end
+		end,
+	})
+	local waypointDrop
+	WaypointSec:Button("Save Current Position", function()
+		local myRoot = MyRoot()
+		if not myRoot then
+			return
+		end
+		Waypoints[waypointName] = myRoot.CFrame
+		local names = {}
+		for k in pairs(Waypoints) do
+			table.insert(names, k)
+		end
+		Try(function()
+			waypointDrop.Refresh(names, true)
+		end)
+		Notify("Waypoints", "Saved '" .. waypointName .. "'.", "Success", 1.8)
+	end, {Icon = "S"})
+
+	local selectedWaypoint = nil
+	waypointDrop = WaypointSec:Dropdown("Saved Waypoints", {"(none yet)"}, nil, function(v)
+		selectedWaypoint = v
+	end)
+
+	WaypointSec:Button("Teleport To Waypoint", function()
+		local myRoot = MyRoot()
+		local cf = selectedWaypoint and Waypoints[selectedWaypoint]
+		if myRoot and cf then
+			myRoot.CFrame = cf
+		else
+			Notify("Waypoints", "Save a waypoint first.", "Warning", 2)
+		end
+	end, {Icon = "T"})
+
+	Bind(Players.PlayerAdded, function()
+		Try(function() playerDrop.Refresh(PlayerNames(), true) end)
+	end)
+	Bind(Players.PlayerRemoving, function()
+		task.defer(function()
+			Try(function() playerDrop.Refresh(PlayerNames(), true) end)
+		end)
+	end)
+
+	local ServerSec = TPTab:CreateSection("Server")
+	ServerSec:Button("Rejoin Server", function()
+		Try(function()
+			TeleportSvc:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+		end)
+	end, {Icon = "R"})
+	ServerSec:Button("Copy Job ID", function()
+		if SetClip then
+			SetClip(tostring(game.JobId))
+			Notify("Server", "Job ID copied.", "Success", 1.6)
+		else
+			Notify("Server", "Clipboard unsupported here.", "Warning", 2)
+		end
+	end, {Icon = "C"})
+	ServerSec:Button("Server Hop (random)", function()
+		Try(function()
+			TeleportSvc:Teleport(game.PlaceId, LocalPlayer)
+		end)
+	end, {Icon = "H"})
+
+	--// ----------------------------------------------------------------------
+	--// 17. UI · INTERFACE TAB (theme + wallpaper shortcuts + unload)
+	--// ----------------------------------------------------------------------
+
+	local UITab = Window:CreateTab("Interface", {Icon = "✦", Order = 9006})
+
+	local LookSec = UITab:CreateSection("Look & Feel")
+	LookSec:Info("Full control lives in the Settings (S) button up top.")
+
+	local themeNames = Window:GetThemes()
+	LookSec:Dropdown("Theme", themeNames, Window:GetTheme(), function(v)
+		Window:SetTheme(v)
+	end)
+
+	LookSec:Toggle("UIBG Wallpaper", true, function(v)
+		Window:ToggleWallpaper(v)
+	end)
+	LookSec:Button("Shuffle Wallpaper", function()
+		Window:ShuffleWallpaper()
+	end, {Icon = "W"})
+	LookSec:Button("Next Wallpaper", function()
+		Window:NextWallpaper()
+	end, {Icon = "N"})
+	LookSec:Slider("Wallpaper Fade", 0, 1, 0.45, function(v)
+		Window:SetWallpaperOpacity(v)
+	end, 0.05)
+
+	local AISec = UITab:CreateSection("Gemini AI")
+	AISec:Info("Open the 'Gemini AI' tab, paste your key in Settings, then chat.")
+	AISec:Button("Ask Gemini about this game", function()
+		Window:SendGemini("Give me three exploit ideas for the Roblox game with PlaceId " .. tostring(game.PlaceId) .. ". Be concise.")
+		Notify("Gemini AI", "Prompt sent - check the Gemini AI tab.", "Info", 2.2)
+	end, {Icon = "AI"})
+	AISec:Button("Ask Gemini to write an ESP", function()
+		Window:SendGemini("Write a compact Roblox Luau box ESP using the Drawing API with a wall check.")
+		Notify("Gemini AI", "Prompt sent - check the Gemini AI tab.", "Info", 2.2)
+	end, {Icon = "AI"})
+
+	local DangerSec = UITab:CreateSection("Session")
+	DangerSec:Keybind("Panic Key (hide UI)", Enum.KeyCode.RightShift, function(key)
+		Window:SetHotkey(key)
+	end)
+
+	local function Unload()
+		if Unloading then
+			return
+		end
+		Unloading = true
+
+		S.AimEnabled = false
+		S.ESPEnabled = false
+		S.TriggerBot = false
+		S.Flying = false
+		S.NoClip = false
+
+		for _, conn in ipairs(Connections) do
+			Try(function() conn:Disconnect() end)
+		end
+		Connections = {}
+
+		for plr in pairs(ESPObjects) do
+			DestroyESP(plr)
+		end
+		for _, d in ipairs(Drawings) do
+			Try(function() d:Remove() end)
+		end
+		Drawings = {}
+
+		StopFly()
+		RestoreRates()
+		ApplyFullBright(false)
+		ApplyNoFog(false)
+		ApplyXRay(false)
+
+		local hum = GetHum(LocalPlayer)
+		if hum then
+			Try(function()
+				hum.WalkSpeed = 16
+				hum.JumpPower = 50
+			end)
+		end
+
+		Try(function() Window:Destroy() end)
+	end
+
+	DangerSec:Button("Unload Suite (full cleanup)", Unload, {Icon = "X"})
+
+	--// ----------------------------------------------------------------------
+	--// 18. BOOT
+	--// ----------------------------------------------------------------------
+
+	Try(function()
+		Camera.FieldOfView = S.CameraFOV
+	end)
+
+	Notify("Universal Suite", "Aimbot / ESP / Weapons / Player tabs are ready.", "Success", 3)
+	if not HasDrawing then
+		Notify("Heads up", "No Drawing API detected - ESP falls back to Chams.", "Warning", 4)
+	end
+
+	return {Unload = Unload, State = S}
+end
 
 function Library:CreateWindow(cfg)
 	cfg = cfg or {}
@@ -681,6 +2555,9 @@ function Library:CreateWindow(cfg)
 		OffsetY = 0,
 		SaveSettings = true,
 		Hotkey = Enum.KeyCode.RightShift,
+		Roundness = 1,
+		UIScale = 1,
+		Blur = false,
 	}
 
 	local UIBGDefaults = {
@@ -691,7 +2568,7 @@ function Library:CreateWindow(cfg)
 		Darken = 0.35,    -- black scrim strength for text readability
 		ScaleMode = "Crop",
 		Shuffle = false,
-		Parallax = true,
+		Motion = true,
 	}
 
 	local State = {
@@ -702,6 +2579,9 @@ function Library:CreateWindow(cfg)
 		OffsetY = Defaults.OffsetY,
 		SaveSettings = Defaults.SaveSettings,
 		Hotkey = Defaults.Hotkey,
+		Roundness = Defaults.Roundness,
+		UIScale = Defaults.UIScale,
+		Blur = Defaults.Blur,
 		Hidden = false,
 		Minimized = false,
 		Destroyed = false,
@@ -709,6 +2589,8 @@ function Library:CreateWindow(cfg)
 		Connections = {},
 		ActiveTab = nil,
 		TabCounter = 0,
+		SuiteLoaded = false,
+		Suite = nil,
 		Gemini = {
 			ApiKey = "",
 			Model = "gemini-2.5-flash",
@@ -729,7 +2611,7 @@ function Library:CreateWindow(cfg)
 			Darken = UIBGDefaults.Darken,
 			ScaleMode = UIBGDefaults.ScaleMode,
 			Shuffle = UIBGDefaults.Shuffle,
-			Parallax = UIBGDefaults.Parallax,
+			Motion = UIBGDefaults.Motion,
 		},
 	}
 
@@ -743,6 +2625,9 @@ function Library:CreateWindow(cfg)
 	local WidthSlider
 	local HeightSlider
 	local ApplyWallpaper
+	local ApplyRoundness
+	local ApplyUIScale
+	local ApplyBlur
 	local UIBGRefs = {}
 	local SyncTabIndicator
 	local GeminiHooks = {}
@@ -783,6 +2668,9 @@ function Library:CreateWindow(cfg)
 			OffsetY = math.floor(State.OffsetY + 0.5),
 			SaveSettings = State.SaveSettings,
 			Hotkey = tostring(State.Hotkey),
+			Roundness = State.Roundness,
+			UIScale = State.UIScale,
+			Blur = State.Blur,
 			Gemini = {
 				ApiKey = State.Gemini.ApiKey,
 				Model = State.Gemini.Model,
@@ -803,7 +2691,7 @@ function Library:CreateWindow(cfg)
 				Darken = State.UIBG.Darken,
 				ScaleMode = State.UIBG.ScaleMode,
 				Shuffle = State.UIBG.Shuffle,
-				Parallax = State.UIBG.Parallax,
+				Motion = State.UIBG.Motion,
 			},
 		}
 		local json = SafeJSONEncode(payload)
@@ -835,6 +2723,9 @@ function Library:CreateWindow(cfg)
 		State.OffsetX = tonumber(data.OffsetX) or 0
 		State.OffsetY = tonumber(data.OffsetY) or 0
 		State.SaveSettings = data.SaveSettings ~= false
+		State.Roundness = Clamp(tonumber(data.Roundness) or State.Roundness, 0, 2)
+		State.UIScale = Clamp(tonumber(data.UIScale) or State.UIScale, 0.6, 1.6)
+		if type(data.Blur) == "boolean" then State.Blur = data.Blur end
 
 		if type(data.Hotkey) == "string" then
 			local name = data.Hotkey:gsub("Enum.KeyCode.", "")
@@ -870,7 +2761,7 @@ function Library:CreateWindow(cfg)
 				end
 			end
 			if type(w.Shuffle) == "boolean" then State.UIBG.Shuffle = w.Shuffle end
-			if type(w.Parallax) == "boolean" then State.UIBG.Parallax = w.Parallax end
+			if type(w.Motion) == "boolean" then State.UIBG.Motion = w.Motion end
 		end
 	end
 
@@ -941,15 +2832,27 @@ function Library:CreateWindow(cfg)
 			GroupTransparency = 1,
 			ZIndex = 1001,
 		})
-		Corner(Card, 14)
-		Stroke(Card, T.Stroke, 1)
+		Corner(Card, 16)
+		do
+			local s = Stroke(Card, accent, 1.2)
+			s.Transparency = 0.45
+		end
+		New("UIGradient", {
+			Parent = Card,
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.02),
+				NumberSequenceKeypoint.new(1, 0.14),
+			}),
+		})
+		ShadowIn(Card, 16, 0.62)
 
 		local Scale = New("UIScale", {Parent = Card, Scale = 0.9})
 
 		local Bar = New("Frame", { -- colored type bar
 			Parent = Card,
-			Position = UDim2.fromOffset(2, 10),
-			Size = UDim2.new(0, 3, 1, -20),
+			Position = UDim2.fromOffset(3, 10),
+			Size = UDim2.new(0, 4, 1, -20),
 			BackgroundColor3 = accent,
 			BorderSizePixel = 0,
 			ZIndex = 1002,
@@ -1049,103 +2952,237 @@ function Library:CreateWindow(cfg)
 		ClipsDescendants = true,
 		ZIndex = 1,
 	})
-	Corner(Main, 20)
-	Stroke(Main, Theme().Stroke, 1)
+	Corner(Main, WINDOW_RADIUS)
+	do
+		local s = Stroke(Main, Theme().Stroke, 1.4)
+		s.Transparency = 0.25
+	end
+	Shadow(Screen, Main, 26, 0.45)
 
-	local MainScale = New("UIScale", {Parent = Main, Scale = 0.95})
-
-	------------------------------------------------------------------
-	-- UIBG  ·  WALLPAPER LAYER (sits behind every other element)
-	------------------------------------------------------------------
-
-	local UIBGHolder = New("Frame", {
+	local MainSheen = New("Frame", {
 		Parent = Main,
-		BackgroundTransparency = 1,
-		Size = UDim2.fromScale(1, 1),
-		ClipsDescendants = true,
-		ZIndex = 0,
-	})
-	Corner(UIBGHolder, 20)
-
-	local UIBGImage = New("ImageLabel", {
-		Parent = UIBGHolder,
-		BackgroundTransparency = 1,
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromScale(1.08, 1.08),
-		Image = "",
-		ImageTransparency = 0.45,
-		ScaleType = Enum.ScaleType.Crop,
-		ZIndex = 0,
-	})
-
-	-- readability scrim + accent wash so text never fights the artwork
-	local UIBGScrim = New("Frame", {
-		Parent = UIBGHolder,
-		BackgroundColor3 = Color3.new(0, 0, 0),
-		BackgroundTransparency = 0.65,
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0.965,
 		BorderSizePixel = 0,
 		Size = UDim2.fromScale(1, 1),
-		ZIndex = 1,
+		ZIndex = 0,
 	})
-
-	local UIBGWash = New("Frame", {
-		Parent = UIBGHolder,
-		BackgroundColor3 = Theme().Accent,
-		BackgroundTransparency = 0.92,
-		BorderSizePixel = 0,
-		Size = UDim2.fromScale(1, 1),
-		ZIndex = 1,
-	})
+	Corner(MainSheen, WINDOW_RADIUS)
 	New("UIGradient", {
-		Parent = UIBGWash,
+		Parent = MainSheen,
 		Rotation = 90,
 		Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.35),
+			NumberSequenceKeypoint.new(0, 0.4),
+			NumberSequenceKeypoint.new(0.45, 1),
 			NumberSequenceKeypoint.new(1, 1),
 		}),
 	})
 
-	local UIBGParallax = {X = 0, Y = 0}
+	local MainScale = New("UIScale", {Parent = Main, Scale = 0.95 * State.UIScale})
+
+	--// live corner-roundness control: rescales every UICorner already made
+	ApplyRoundness = function(mult)
+		State.Roundness = Clamp(tonumber(mult) or 1, 0, 2)
+		RoundnessMult = State.Roundness
+		for _, d in ipairs(Screen:GetDescendants()) do
+			if d:IsA("UICorner") then
+				local base = d:GetAttribute("KM_BaseRadius")
+				if base and base < 900 then
+					d.CornerRadius = UDim.new(0, math.max(0, math.floor(base * RoundnessMult + 0.5)))
+				end
+			end
+		end
+	end
+
+	ApplyUIScale = function(scale)
+		State.UIScale = Clamp(tonumber(scale) or 1, 0.6, 1.6)
+		if not State.Hidden then
+			Tween(MainScale, {Scale = State.UIScale}, 0.18)
+		end
+	end
+
+	--// real glassmorphism: blur the 3D world behind the window
+	local WorldBlur = nil
+	ApplyBlur = function(on)
+		State.Blur = on and true or false
+		if State.Blur then
+			if not WorldBlur or not WorldBlur.Parent then
+				WorldBlur = Instance.new("BlurEffect")
+				WorldBlur.Name = "KM_UIBlur"
+				WorldBlur.Size = 0
+				WorldBlur.Parent = game:GetService("Lighting")
+			end
+			WorldBlur.Enabled = true
+			Tween(WorldBlur, {Size = (not State.Hidden and not State.Minimized) and 16 or 0}, 0.3)
+		elseif WorldBlur then
+			Tween(WorldBlur, {Size = 0}, 0.25)
+			task.delay(0.3, function()
+				if WorldBlur and WorldBlur.Parent then
+					WorldBlur.Enabled = false
+				end
+			end)
+		end
+	end
+
+	------------------------------------------------------------------
+	-- UIBG  ·  WALLPAPER LAYER
+	--   Every layer is a direct child of Main at exactly 1x1 with its own
+	--   UICorner, so nothing can ever poke a square edge past the window's
+	--   rounded corners (the V8.0 bug).
+	------------------------------------------------------------------
+
+	local UIBGImage = New("ImageLabel", {
+		Parent = Main,
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		Position = UDim2.fromScale(0, 0),
+		Image = "",
+		ImageTransparency = 0.45,
+		ScaleType = Enum.ScaleType.Crop,
+		Visible = false,
+		ZIndex = 0,
+	})
+	Corner(UIBGImage, WINDOW_RADIUS)
+
+	-- vertical scrim: darker at the very top and bottom so the title bar and
+	-- the input row always stay readable, lighter through the middle
+	local UIBGScrim = New("Frame", {
+		Parent = Main,
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 0.55,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 0,
+	})
+	Corner(UIBGScrim, WINDOW_RADIUS)
+	local ScrimGradient = New("UIGradient", {
+		Parent = UIBGScrim,
+		Rotation = 90,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0.00, 0.05),
+			NumberSequenceKeypoint.new(0.28, 0.55),
+			NumberSequenceKeypoint.new(0.72, 0.55),
+			NumberSequenceKeypoint.new(1.00, 0.02),
+		}),
+	})
+
+	-- accent wash: ties the artwork to the active theme colour
+	local UIBGWash = New("Frame", {
+		Parent = Main,
+		BackgroundColor3 = Theme().Accent,
+		BackgroundTransparency = 0.9,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 0,
+	})
+	Corner(UIBGWash, WINDOW_RADIUS)
+	New("UIGradient", {
+		Parent = UIBGWash,
+		Rotation = 135,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.25),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+	})
+
+	-- moving sheen: a slow diagonal light sweep across the wallpaper
+	local UIBGSheen = New("Frame", {
+		Parent = Main,
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0.94,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		Visible = false,
+		ZIndex = 0,
+	})
+	Corner(UIBGSheen, WINDOW_RADIUS)
+	local SheenGradient = New("UIGradient", {
+		Parent = UIBGSheen,
+		Rotation = 25,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0.00, 1),
+			NumberSequenceKeypoint.new(0.42, 1),
+			NumberSequenceKeypoint.new(0.50, 0.55),
+			NumberSequenceKeypoint.new(0.58, 1),
+			NumberSequenceKeypoint.new(1.00, 1),
+		}),
+	})
+
+	local WallpaperStatus = {Downloading = false, Message = ""}
+
+	local function CurrentWallpaper()
+		local w = State.UIBG
+		if Trim(w.CustomId) ~= "" then
+			return nil
+		end
+		return WALLPAPERS[w.Index]
+	end
 
 	ApplyWallpaper = function(silent)
 		local w = State.UIBG
-		local asset = nil
+		local asset, isLocal = nil, false
 		local custom = Trim(w.CustomId)
+
 		if custom ~= "" then
 			if custom:match("^%d+$") then
 				asset = "rbxassetid://" .. custom
 			else
 				asset = custom
 			end
-		elseif w.Index >= 1 and WALLPAPERS[w.Index] then
-			asset = "rbxassetid://" .. tostring(WALLPAPERS[w.Index].Id)
+		else
+			asset, isLocal = WallpaperAsset(WALLPAPERS[w.Index])
 		end
 
-		if not w.Enabled or not asset then
-			UIBGHolder.Visible = false
+		local on = w.Enabled and asset ~= nil
+		UIBGImage.Visible = on
+		UIBGScrim.Visible = on
+		UIBGWash.Visible = on
+		UIBGSheen.Visible = on and w.Motion
+
+		if not on then
 			return
 		end
 
-		UIBGHolder.Visible = true
 		UIBGImage.Image = asset
 		UIBGImage.ScaleType = ScaleTypeFromName(w.ScaleMode)
 		if w.ScaleMode == "Tile" then
 			UIBGImage.TileSize = UDim2.fromScale(0.34, 0.34)
 		end
-		Tween(UIBGImage, {ImageTransparency = Clamp(w.Opacity, 0, 1)}, 0.25)
-		Tween(UIBGScrim, {BackgroundTransparency = 1 - Clamp(w.Darken, 0, 1)}, 0.25)
 		UIBGWash.BackgroundColor3 = Theme().Accent
-		if not silent then
-			-- soft fade-in whenever the picture actually changes
+
+		if silent then
+			UIBGImage.ImageTransparency = Clamp(w.Opacity, 0, 1)
+			UIBGScrim.BackgroundTransparency = 1 - Clamp(w.Darken, 0, 1)
+		else
 			UIBGImage.ImageTransparency = 1
-			Tween(UIBGImage, {ImageTransparency = Clamp(w.Opacity, 0, 1)}, 0.35)
+			Tween(UIBGImage, {ImageTransparency = Clamp(w.Opacity, 0, 1)}, 0.4)
+			Tween(UIBGScrim, {BackgroundTransparency = 1 - Clamp(w.Darken, 0, 1)}, 0.3)
+		end
+
+		-- lazily pull the picture into  img/  the first time it is used
+		if custom == "" and not isLocal and FileSystemOK then
+			local wp = WALLPAPERS[w.Index]
+			if wp and wp.Url and not WallpaperStatus.Downloading then
+				WallpaperStatus.Downloading = true
+				task.spawn(function()
+					local ok = CacheWallpaper(wp)
+					WallpaperStatus.Downloading = false
+					if ok and not State.Destroyed and State.UIBG.Index == w.Index then
+						local newAsset = WallpaperAsset(wp)
+						if newAsset then
+							UIBGImage.Image = newAsset
+						end
+					end
+				end)
+			end
 		end
 	end
 
-	local function ShuffleWallpaper(notifyIt)
+	local function ShuffleWallpaper()
 		if #WALLPAPERS == 0 then
-			return
+			return State.UIBG.Index
 		end
 		local newIndex = State.UIBG.Index
 		if #WALLPAPERS > 1 then
@@ -1163,12 +3200,29 @@ function Library:CreateWindow(cfg)
 		return newIndex
 	end
 
+	-- sheen animation loop (only alive while motion + wallpaper are on)
+	task.spawn(function()
+		while not State.Destroyed do
+			if State.UIBG.Enabled and State.UIBG.Motion and UIBGSheen.Visible then
+				SheenGradient.Offset = Vector2.new(-1.2, 0)
+				Tween(SheenGradient, {Offset = Vector2.new(1.2, 0)}, 3.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+				task.wait(6.5)
+			else
+				task.wait(1)
+			end
+		end
+	end)
+
 	local function EffectiveSize()
 		local vp = Camera and Camera.ViewportSize or Vector2.new(1280, 720)
 		local ew = Clamp(State.Width, 300, math.max(320, math.floor(vp.X) - 16))
 		local eh = Clamp(State.Height, 220, math.max(240, math.floor(vp.Y) - 16))
 		return ew, eh
 	end
+
+	------------------------------------------------------------------
+	-- TOP BAR (title, gradient wordmark, circular glass buttons)
+	------------------------------------------------------------------
 
 	local Topbar = New("Frame", {
 		Parent = Main,
@@ -1177,26 +3231,27 @@ function Library:CreateWindow(cfg)
 		ZIndex = 5,
 	})
 
-	New("TextLabel", {
+	local TitleLabel = New("TextLabel", {
 		Parent = Topbar,
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(18, 10),
-		Size = UDim2.new(1, -190, 0, 22),
+		Position = UDim2.fromOffset(18, 9),
+		Size = UDim2.new(1, -190, 0, 23),
 		Text = cfg.Title or "Kilometres UI X",
 		TextColor3 = Theme().Text,
-		TextSize = 18,
+		TextSize = 19,
 		Font = Enum.Font.GothamBold,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		ZIndex = 6,
 	})
+	Gradient(TitleLabel, Color3.new(1, 1, 1), Theme().Accent, 25)
 
-	New("TextLabel", {
+	local SubtitleLabel = New("TextLabel", {
 		Parent = Topbar,
 		BackgroundTransparency = 1,
 		Position = UDim2.fromOffset(18, 32),
 		Size = UDim2.new(1, -190, 0, 16),
-		Text = cfg.Subtitle or ("V7 · " .. Library.VersionName),
+		Text = cfg.Subtitle or ("V8 · " .. Library.VersionName),
 		TextColor3 = Theme().TextDim,
 		TextSize = 12,
 		Font = Enum.Font.Gotham,
@@ -1205,14 +3260,36 @@ function Library:CreateWindow(cfg)
 		ZIndex = 6,
 	})
 
-	local function TopbarButton(xOffset, label, size)
+	-- thin accent rule under the title bar
+	local TopbarRule = New("Frame", {
+		Parent = Topbar,
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, 2),
+		Size = UDim2.new(1, -36, 0, 1),
+		BackgroundColor3 = Theme().Accent,
+		BackgroundTransparency = 0.35,
+		BorderSizePixel = 0,
+		ZIndex = 6,
+	})
+	New("UIGradient", {
+		Parent = TopbarRule,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.5, 0.15),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+	})
+
+	local TopbarButtons = {}
+
+	local function TopbarButton(xOffset, label, size, hoverColorKey)
 		local btn = New("TextButton", {
 			Parent = Topbar,
-			AnchorPoint = Vector2.new(1, 0),
-			Position = UDim2.new(1, xOffset, 0, 15),
-			Size = UDim2.fromOffset(30, 28),
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, xOffset, 0, 29),
+			Size = UDim2.fromOffset(32, 32),
 			BackgroundColor3 = Theme().Surface2,
-			BackgroundTransparency = Theme().Surface2Transparency,
+			BackgroundTransparency = math.max(0.08, Theme().Surface2Transparency),
 			BorderSizePixel = 0,
 			Text = label,
 			TextSize = size or 15,
@@ -1221,32 +3298,35 @@ function Library:CreateWindow(cfg)
 			AutoButtonColor = false,
 			ZIndex = 8,
 		})
-		Corner(btn, 10)
-		Stroke(btn, Theme().Stroke, 1)
+		Corner(btn, 999)
+		local st = Stroke(btn, Theme().Stroke, 1)
+		st.Transparency = 0.3
+		local sc = New("UIScale", {Parent = btn, Scale = 1})
+
+		btn.MouseEnter:Connect(function()
+			local col = (hoverColorKey == "error" and Theme().Error) or Theme().Accent
+			Tween(btn, {BackgroundColor3 = col, BackgroundTransparency = 0.05}, 0.14)
+			Tween(sc, {Scale = 1.08}, 0.14)
+		end)
+		btn.MouseLeave:Connect(function()
+			Tween(btn, {BackgroundColor3 = Theme().Surface2, BackgroundTransparency = math.max(0.08, Theme().Surface2Transparency)}, 0.16)
+			Tween(sc, {Scale = 1}, 0.16)
+		end)
+		btn.MouseButton1Down:Connect(function()
+			Tween(sc, {Scale = 0.9}, 0.08)
+		end)
+		btn.MouseButton1Up:Connect(function()
+			Tween(sc, {Scale = 1.05}, 0.1)
+		end)
+
+		table.insert(TopbarButtons, btn)
 		return btn
 	end
 
-	local DefaultsButton  = TopbarButton(-156, "D", 15)
-	local SettingsButton  = TopbarButton(-118, "S", 15)
-	local MinimizeButton  = TopbarButton(-80,  "–", 18)
-	local HideButton      = TopbarButton(-42,  "×", 16)
-
-	-- subtle parallax: the wallpaper drifts against pointer movement
-	AddConn(UIS.InputChanged:Connect(function(input)
-		if State.Destroyed or not State.UIBG.Parallax or not UIBGHolder.Visible then
-			return
-		end
-		if input.UserInputType ~= Enum.UserInputType.MouseMovement
-			and input.UserInputType ~= Enum.UserInputType.Touch then
-			return
-		end
-		local vp = Camera and Camera.ViewportSize or Vector2.new(1280, 720)
-		local nx = Clamp((input.Position.X / math.max(1, vp.X)) - 0.5, -0.5, 0.5)
-		local ny = Clamp((input.Position.Y / math.max(1, vp.Y)) - 0.5, -0.5, 0.5)
-		UIBGParallax.X = -nx * 14
-		UIBGParallax.Y = -ny * 10
-		UIBGImage.Position = UDim2.new(0.5, UIBGParallax.X, 0.5, UIBGParallax.Y)
-	end))
+	local DefaultsButton  = TopbarButton(-152, "⟳", 16)
+	local SettingsButton  = TopbarButton(-112, "⚙", 16)
+	local MinimizeButton  = TopbarButton(-72,  "—", 14)
+	local HideButton      = TopbarButton(-32,  "✕", 14, "error")
 
 	------------------------------------------------------------------
 	-- TOP TAB BAR  (V8: tabs are a horizontal top bar on every device)
@@ -1265,8 +3345,19 @@ function Library:CreateWindow(cfg)
 		ClipsDescendants = true,
 		ZIndex = 20,
 	})
-	Corner(TabBar, 16)
-	Stroke(TabBar, Theme().Stroke, 1)
+	Corner(TabBar, PANEL_RADIUS)
+	do
+		local s = Stroke(TabBar, Theme().Stroke, 1)
+		s.Transparency = 0.35
+	end
+	New("UIGradient", {
+		Parent = TabBar,
+		Rotation = 90,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.06),
+			NumberSequenceKeypoint.new(1, 0.22),
+		}),
+	})
 
 	-- the strip holds the buttons (list layout), the indicator is a sibling
 	-- so the layout never tries to reposition it
@@ -1289,15 +3380,17 @@ function Library:CreateWindow(cfg)
 	local TabIndicator = New("Frame", {
 		Parent = TabBar,
 		AnchorPoint = Vector2.new(0, 1),
-		Position = UDim2.new(0, 10, 1, -5),
-		Size = UDim2.fromOffset(0, 3),
+		Position = UDim2.new(0, 10, 1, -4),
+		Size = UDim2.fromOffset(0, 4),
 		BackgroundColor3 = Theme().Accent,
-		BackgroundTransparency = 0.05,
+		BackgroundTransparency = 0,
 		BorderSizePixel = 0,
 		Visible = false,
 		ZIndex = 28,
 	})
-	Corner(TabIndicator, 3)
+	Corner(TabIndicator, 999)
+	Gradient(TabIndicator, Theme().Accent, ColorLerp(Theme().Accent, Color3.new(1, 1, 1), 0.55), 0)
+	Glow(TabBar, TabIndicator, Theme().Accent, 9, 0.35)
 
 	local PageHolder = New("Frame", {Parent = Main, BackgroundTransparency = 1, ZIndex = 30})
 
@@ -1335,6 +3428,7 @@ function Library:CreateWindow(cfg)
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = 81,
 	})
+	Corner(SettingsBackdrop, WINDOW_RADIUS)
 
 	local SettingsPanel = New("Frame", {
 		Parent = SettingsOverlay,
@@ -1346,8 +3440,11 @@ function Library:CreateWindow(cfg)
 		BorderSizePixel = 0,
 		ZIndex = 82,
 	})
-	Corner(SettingsPanel, 18)
-	Stroke(SettingsPanel, Theme().Stroke, 1)
+	Corner(SettingsPanel, WINDOW_RADIUS - 4)
+	do
+		local s = Stroke(SettingsPanel, Theme().Stroke, 1.2)
+		s.Transparency = 0.3
+	end
 
 	local SettingsHeader = New("Frame", {Parent = SettingsPanel, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 48), ZIndex = 83})
 	local SettingsTitle = New("TextLabel", {
@@ -1405,8 +3502,19 @@ function Library:CreateWindow(cfg)
 			LayoutOrder = order or 1,
 			ZIndex = 84,
 		})
-		Corner(panel, 14)
-		Stroke(panel, Theme().Stroke, 1)
+		Corner(panel, PANEL_RADIUS)
+		do
+			local s = Stroke(panel, Theme().Stroke, 1)
+			s.Transparency = 0.35
+		end
+		New("UIGradient", {
+			Parent = panel,
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.05),
+				NumberSequenceKeypoint.new(1, 0.2),
+			}),
+		})
 		New("UIPadding", {Parent = panel, PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12), PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12)})
 		New("UIListLayout", {Parent = panel, Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder})
 		local header = New("TextLabel", {
@@ -1455,6 +3563,8 @@ function Library:CreateWindow(cfg)
 		ZIndex = 999,
 	})
 	Corner(Orb, 999)
+	Gradient(Orb, ColorLerp(Theme().Accent, Color3.new(1, 1, 1), 0.25), ColorLerp(Theme().Accent, Color3.new(0, 0, 0), 0.25), 90)
+	Glow(Screen, Orb, Theme().Accent, 16, 0.45)
 	local OrbScale = New("UIScale", {Parent = Orb, Scale = 1})
 
 	local OrbCenter = {X = 64, Y = 64}
@@ -1622,13 +3732,16 @@ function Library:CreateWindow(cfg)
 	SetHidden = function(hidden)
 		State.Hidden = hidden and true or false
 		if State.Hidden then
-			Tween(MainScale, {Scale = 0.94}, 0.15)
+			Tween(MainScale, {Scale = 0.94 * State.UIScale}, 0.15)
 			task.delay(0.14, function()
 				if State.Hidden then
 					Main.Visible = false
 				end
 			end)
 			SettingsOverlay.Visible = false
+			if ApplyBlur and State.Blur then
+				ApplyBlur(true)
+			end
 			Orb.Visible = true
 			ClampOrb()
 			Tween(OrbScale, {Scale = 0}, 0.01)
@@ -1640,7 +3753,7 @@ function Library:CreateWindow(cfg)
 				State.Minimized = false
 				if UpdateLayout then UpdateLayout() end
 			end
-			Tween(MainScale, {Scale = 1}, 0.22, Enum.EasingStyle.Back)
+			Tween(MainScale, {Scale = State.UIScale}, 0.22, Enum.EasingStyle.Back)
 			PageHolder.Visible = not SettingsOverlay.Visible
 			if not SettingsOverlay.Visible then
 				TabBar.Visible = true
@@ -1780,8 +3893,19 @@ function Library:CreateWindow(cfg)
 			AutoButtonColor = false,
 			ZIndex = 90,
 		})
-		Corner(btn, 12)
-		Stroke(btn, Theme().Stroke, 1)
+		Corner(btn, 14)
+		do
+			local s = Stroke(btn, Theme().Stroke, 1)
+			s.Transparency = 0.35
+		end
+		New("UIGradient", {
+			Parent = btn,
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.02),
+				NumberSequenceKeypoint.new(1, 0.16),
+			}),
+		})
 		local bscale = New("UIScale", {Parent = btn, Scale = 1})
 
 		local iconLbl
@@ -1906,7 +4030,7 @@ function Library:CreateWindow(cfg)
 			AutoButtonColor = false,
 			ZIndex = 90,
 		})
-		Corner(toggle, 12)
+		Corner(toggle, 14)
 		Stroke(toggle, Theme().Stroke, 1)
 
 		local label = New("TextLabel", {
@@ -1933,6 +4057,14 @@ function Library:CreateWindow(cfg)
 			ZIndex = 92,
 		})
 		Corner(switch, 999)
+		New("UIGradient", {
+			Parent = switch,
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.05),
+				NumberSequenceKeypoint.new(1, 0.25),
+			}),
+		})
 
 		local knob = New("Frame", {
 			Parent = switch,
@@ -2000,7 +4132,7 @@ function Library:CreateWindow(cfg)
 			BorderSizePixel = 0,
 			ZIndex = 90,
 		})
-		Corner(slider, 12)
+		Corner(slider, 14)
 		Stroke(slider, Theme().Stroke, 1)
 
 		local label = New("TextLabel", {
@@ -2049,6 +4181,14 @@ function Library:CreateWindow(cfg)
 			ZIndex = 92,
 		})
 		Corner(fill, 999)
+		New("UIGradient", {
+			Parent = fill,
+			Rotation = 0,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.25),
+				NumberSequenceKeypoint.new(1, 0),
+			}),
+		})
 
 		local knob = New("Frame", {
 			Parent = bar,
@@ -2155,7 +4295,7 @@ function Library:CreateWindow(cfg)
 			BorderSizePixel = 0,
 			ZIndex = 90,
 		})
-		Corner(wrap, 12)
+		Corner(wrap, 14)
 		Stroke(wrap, Theme().Stroke, 1)
 
 		local label = New("TextLabel", {
@@ -2277,7 +4417,7 @@ function Library:CreateWindow(cfg)
 			BorderSizePixel = 0,
 			ZIndex = 90,
 		})
-		Corner(Holder, 12)
+		Corner(Holder, 14)
 		Stroke(Holder, Theme().Stroke, 1)
 
 		local Label = New("TextLabel", {
@@ -2483,7 +4623,7 @@ function Library:CreateWindow(cfg)
 			BorderSizePixel = 0,
 			ZIndex = 90,
 		})
-		Corner(row, 12)
+		Corner(row, 14)
 		Stroke(row, Theme().Stroke, 1)
 
 		local label = New("TextLabel", {
@@ -2592,7 +4732,7 @@ function Library:CreateWindow(cfg)
 			AutomaticSize = Enum.AutomaticSize.Y,
 			ZIndex = 90,
 		})
-		Corner(row, 12)
+		Corner(row, 14)
 		Stroke(row, Theme().Stroke, 1)
 		New("UIListLayout", {Parent = row, Padding = UDim.new(0, 0), SortOrder = Enum.SortOrder.LayoutOrder})
 
@@ -2788,7 +4928,7 @@ function Library:CreateWindow(cfg)
 			Size = UDim2.new(1, 0, 0, 0),
 			ZIndex = 90,
 		})
-		Corner(wrap, 12)
+		Corner(wrap, 14)
 		Stroke(wrap, Theme().Stroke, 1)
 		New("UIPadding", {Parent = wrap, PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12)})
 		New("UIListLayout", {Parent = wrap, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})
@@ -2933,6 +5073,23 @@ function Library:CreateWindow(cfg)
 		CreateThemeButton(info.Label, info.Key, i)
 	end
 
+	local LookRefs = {}
+
+	LookRefs.Roundness = CreateSlider(ThemePanel, "Corner Roundness", 0, 2, State.Roundness, function(v)
+		ApplyRoundness(v)
+		Persist()
+	end, 0.05)
+
+	LookRefs.UIScale = CreateSlider(ThemePanel, "UI Scale", 0.6, 1.6, State.UIScale, function(v)
+		ApplyUIScale(v)
+		Persist()
+	end, 0.05)
+
+	LookRefs.Blur = CreateToggle(ThemePanel, "Background Blur (glass)", State.Blur, function(v)
+		ApplyBlur(v)
+		Persist()
+	end)
+
 	------------------------------------------------------------------
 	-- WALLPAPER (UIBG) SETTINGS
 	------------------------------------------------------------------
@@ -3009,22 +5166,23 @@ function Library:CreateWindow(cfg)
 		Corner(cell, 10)
 		Stroke(cell, Theme().Stroke, 1)
 
-		New("ImageLabel", {
+		local thumb = New("ImageLabel", {
 			Parent = cell,
 			BackgroundTransparency = 1,
 			Size = UDim2.fromScale(1, 1),
-			Image = "rbxassetid://" .. tostring(wp.Id),
+			Image = WallpaperAsset(wp) or "",
 			ScaleType = Enum.ScaleType.Crop,
 			ZIndex = 86,
 		})
+		Corner(thumb, 10)
 
 		local caption = New("TextLabel", {
 			Parent = cell,
 			AnchorPoint = Vector2.new(0, 1),
 			Position = UDim2.new(0, 0, 1, 0),
-			Size = UDim2.new(1, 0, 0, 16),
+			Size = UDim2.new(1, 0, 0, 18),
 			BackgroundColor3 = Color3.new(0, 0, 0),
-			BackgroundTransparency = 0.35,
+			BackgroundTransparency = 0.25,
 			BorderSizePixel = 0,
 			Text = tostring(i) .. ". " .. wp.Name,
 			TextColor3 = Color3.new(1, 1, 1),
@@ -3034,11 +5192,32 @@ function Library:CreateWindow(cfg)
 			ZIndex = 88,
 		})
 
+		Corner(caption, 9)
+		New("UIGradient", {
+			Parent = caption,
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.55),
+				NumberSequenceKeypoint.new(1, 0),
+			}),
+		})
+
 		cell.MouseButton1Click:Connect(function()
 			SelectWallpaper(i, true)
 		end)
 
-		WallCells[i] = {Button = cell, Caption = caption}
+		WallCells[i] = {Button = cell, Caption = caption, Thumb = thumb}
+	end
+
+	UIBGRefs.SetCellImage = function(index)
+		local cell = WallCells[index]
+		local wp = WALLPAPERS[index]
+		if cell and wp then
+			local asset = WallpaperAsset(wp)
+			if asset then
+				cell.Thumb.Image = asset
+			end
+		end
 	end
 
 	-- prev / random / next row
@@ -3146,14 +5325,66 @@ function Library:CreateWindow(cfg)
 	end)
 	UIBGRefs.Shuffle = shuffleToggle
 
-	local parallaxToggle = CreateToggle(WallpaperPanel, "Parallax Motion", State.UIBG.Parallax, function(v)
-		State.UIBG.Parallax = v
-		if not v then
-			UIBGImage.Position = UDim2.fromScale(0.5, 0.5)
-		end
+	local motionToggle = CreateToggle(WallpaperPanel, "Motion & Sheen", State.UIBG.Motion, function(v)
+		State.UIBG.Motion = v
+		ApplyWallpaper(true)
 		Persist()
 	end)
-	UIBGRefs.Parallax = parallaxToggle
+	UIBGRefs.Motion = motionToggle
+
+	local cacheInfo = CreateInfo(WallpaperPanel, "img/ cache: checking...")
+	local function RefreshCacheInfo()
+		if not FileSystemOK then
+			cacheInfo.Text = "This executor cannot write files - using Roblox asset ids."
+			return
+		end
+		cacheInfo.Text = string.format("img/ cache: %d of %d wallpapers stored on device.", CachedCount(), #WALLPAPERS)
+	end
+	RefreshCacheInfo()
+	UIBGRefs.RefreshCache = RefreshCacheInfo
+
+	CreateButton(WallpaperPanel, "Download All Wallpapers To img/", function()
+		if not FileSystemOK then
+			Notify("UIBG", "This executor has no writefile/getcustomasset.", 3, "Warning")
+			return
+		end
+		Notify("UIBG", "Downloading 20 wallpapers into img/ ...", 2.5, "Info")
+		task.spawn(function()
+			EnsureImgFolder()
+			local done, failed = 0, 0
+			for i, wp in ipairs(WALLPAPERS) do
+				if State.Destroyed then
+					return
+				end
+				if CacheWallpaper(wp) then
+					done = done + 1
+					if UIBGRefs.SetCellImage then
+						UIBGRefs.SetCellImage(i)
+					end
+				else
+					failed = failed + 1
+				end
+				cacheInfo.Text = string.format("Downloading... %d/%d (%d failed)", done, #WALLPAPERS, failed)
+				task.wait(0.05)
+			end
+			RefreshCacheInfo()
+			ApplyWallpaper(true)
+			Notify("UIBG", string.format("img/ ready - %d saved, %d failed.", done, failed), 3, done > 0 and "Success" or "Error")
+		end)
+	end, {Icon = "D"})
+
+	CreateButton(WallpaperPanel, "Clear img/ Cache", function()
+		if type(delfile) ~= "function" then
+			Notify("UIBG", "delfile is not supported here.", 2.5, "Warning")
+			return
+		end
+		for _, wp in ipairs(WALLPAPERS) do
+			pcall(delfile, ImgPath(wp))
+		end
+		RefreshCacheInfo()
+		ApplyWallpaper(true)
+		Notify("UIBG", "Cached wallpapers removed.", 2, "Info")
+	end, {Icon = "C"})
 
 	UIBGRefs.Refresh = function()
 		for i, cell in ipairs(WallCells) do
@@ -3335,6 +5566,9 @@ function Library:CreateWindow(cfg)
 		State.OffsetY = 0
 		State.SaveSettings = true
 		State.Hotkey = Defaults.Hotkey
+		State.Roundness = Defaults.Roundness
+		State.UIScale = Defaults.UIScale
+		State.Blur = Defaults.Blur
 		State.Gemini.ApiKey = ""
 		State.Gemini.Model = "gemini-2.5-flash"
 		State.Gemini.Endpoint = DEFAULT_GEMINI_ENDPOINT
@@ -3352,7 +5586,7 @@ function Library:CreateWindow(cfg)
 		State.UIBG.Darken = UIBGDefaults.Darken
 		State.UIBG.ScaleMode = UIBGDefaults.ScaleMode
 		State.UIBG.Shuffle = UIBGDefaults.Shuffle
-		State.UIBG.Parallax = UIBGDefaults.Parallax
+		State.UIBG.Motion = UIBGDefaults.Motion
 		if ApplyLoadedState then
 			ApplyLoadedState()
 		end
@@ -3366,6 +5600,14 @@ function Library:CreateWindow(cfg)
 
 	ApplyLoadedState = function()
 		SetTheme(State.ThemeName)
+		ApplyRoundness(State.Roundness)
+		ApplyUIScale(State.UIScale)
+		ApplyBlur(State.Blur)
+		if LookRefs.Roundness then
+			LookRefs.Roundness.Set(State.Roundness, true)
+			LookRefs.UIScale.Set(State.UIScale, true)
+			LookRefs.Blur.Set(State.Blur, true)
+		end
 		WidthSlider.Set(State.Width, true)
 		HeightSlider.Set(State.Height, true)
 		saveToggle.Set(State.SaveSettings, true)
@@ -3392,7 +5634,7 @@ function Library:CreateWindow(cfg)
 			UIBGRefs.Darken.Set(State.UIBG.Darken, true)
 			UIBGRefs.ScaleMode.Set(State.UIBG.ScaleMode, true)
 			UIBGRefs.Shuffle.Set(State.UIBG.Shuffle, true)
-			UIBGRefs.Parallax.Set(State.UIBG.Parallax, true)
+			UIBGRefs.Motion.Set(State.UIBG.Motion, true)
 			UIBGRefs.Refresh()
 		end
 		ApplyWallpaper(true)
@@ -3543,7 +5785,7 @@ function Library:CreateWindow(cfg)
 		opts = opts or {}
 		local Tab = {}
 		State.TabCounter = State.TabCounter + 1
-		local order = opts.Internal and 99999 or State.TabCounter
+		local order = tonumber(opts.Order) or (opts.Internal and 99999 or State.TabCounter)
 
 		local Data = {
 			Active = false,
@@ -3567,8 +5809,12 @@ function Library:CreateWindow(cfg)
 			LayoutOrder = order,
 			ZIndex = 25,
 		})
-		Corner(TabButton, 11)
-		Stroke(TabButton, Theme().Stroke, 1)
+		Corner(TabButton, 12)
+		do
+			local s = Stroke(TabButton, Theme().Stroke, 1)
+			s.Transparency = 0.4
+		end
+		Gradient(TabButton, Theme().Surface2, ColorLerp(Theme().Surface2, Color3.new(0, 0, 0), 0.18), 90)
 		New("UIPadding", {Parent = TabButton, PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14)})
 		New("UIListLayout", {
 			Parent = TabButton,
@@ -3666,6 +5912,7 @@ function Library:CreateWindow(cfg)
 			for _, t in ipairs(Tabs) do
 				t.Active = false
 				t.Page.Visible = false
+				Gradient(t.Button, Theme().Surface2, ColorLerp(Theme().Surface2, Color3.new(0, 0, 0), 0.18), 90)
 				Tween(t.Button, {BackgroundColor3 = Theme().Surface2, BackgroundTransparency = Theme().Surface2Transparency}, 0.15)
 				Tween(t.Label, {TextColor3 = Theme().TextDim}, 0.15)
 				if t.Icon then
@@ -3674,7 +5921,8 @@ function Library:CreateWindow(cfg)
 			end
 			Data.Active = true
 			Page.Visible = true
-			Tween(TabButton, {BackgroundColor3 = Theme().Accent, BackgroundTransparency = 0.12}, 0.15)
+			Gradient(TabButton, Theme().Accent, ColorLerp(Theme().Accent, Color3.new(1, 1, 1), 0.32), 90)
+			Tween(TabButton, {BackgroundColor3 = Theme().Accent, BackgroundTransparency = 0.05}, 0.15)
 			Tween(TabLabel, {TextColor3 = Color3.new(1, 1, 1)}, 0.15)
 			if TabIcon then
 				Tween(TabIcon, {TextColor3 = Color3.new(1, 1, 1)}, 0.15)
@@ -3700,7 +5948,12 @@ function Library:CreateWindow(cfg)
 
 		AddRefresher(function()
 			TabButton.BackgroundColor3 = Data.Active and Theme().Accent or Theme().Surface2
-			TabButton.BackgroundTransparency = Data.Active and 0.12 or Theme().Surface2Transparency
+			TabButton.BackgroundTransparency = Data.Active and 0.05 or Theme().Surface2Transparency
+			if Data.Active then
+				Gradient(TabButton, Theme().Accent, ColorLerp(Theme().Accent, Color3.new(1, 1, 1), 0.32), 90)
+			else
+				Gradient(TabButton, Theme().Surface2, ColorLerp(Theme().Surface2, Color3.new(0, 0, 0), 0.18), 90)
+			end
 			TabLabel.TextColor3 = Data.Active and Color3.new(1, 1, 1) or Theme().TextDim
 			if TabIcon then
 				TabIcon.TextColor3 = Data.Active and Color3.new(1, 1, 1) or Theme().TextDim
@@ -3720,8 +5973,19 @@ function Library:CreateWindow(cfg)
 				Size = UDim2.new(1, -2, 0, 0),
 				ZIndex = 40,
 			})
-			Corner(Holder, 16)
-			Stroke(Holder, Theme().Stroke, 1)
+			Corner(Holder, PANEL_RADIUS)
+			do
+				local s = Stroke(Holder, Theme().Stroke, 1)
+				s.Transparency = 0.35
+			end
+			New("UIGradient", {
+				Parent = Holder,
+				Rotation = 90,
+				Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0.04),
+					NumberSequenceKeypoint.new(1, 0.18),
+				}),
+			})
 
 			New("UIPadding", {Parent = Holder, PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12), PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12)})
 			New("UIListLayout", {Parent = Holder, Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder})
@@ -4076,8 +6340,11 @@ function Library:CreateWindow(cfg)
 		ScrollingDirection = Enum.ScrollingDirection.Y,
 		ZIndex = 50,
 	})
-	Corner(ChatScroll, 14)
-	Stroke(ChatScroll, Theme().Stroke, 1)
+	Corner(ChatScroll, PANEL_RADIUS)
+	do
+		local s = Stroke(ChatScroll, Theme().Stroke, 1)
+		s.Transparency = 0.35
+	end
 
 	local ChatLayout = New("UIListLayout", {
 		Parent = ChatScroll,
@@ -4177,8 +6444,11 @@ function Library:CreateWindow(cfg)
 		BorderSizePixel = 0,
 		ZIndex = 50,
 	})
-	Corner(InputHolder, 12)
-	Stroke(InputHolder, Theme().Stroke, 1)
+	Corner(InputHolder, 14)
+	do
+		local s = Stroke(InputHolder, Theme().Stroke, 1)
+		s.Transparency = 0.3
+	end
 
 	local ChatInput = New("TextBox", {
 		Parent = InputHolder,
@@ -4211,7 +6481,8 @@ function Library:CreateWindow(cfg)
 		AutoButtonColor = false,
 		ZIndex = 51,
 	})
-	Corner(SendBtn, 12)
+	Corner(SendBtn, 14)
+	Gradient(SendBtn, ColorLerp(Theme().Accent, Color3.new(1, 1, 1), 0.22), ColorLerp(Theme().Accent, Color3.new(0, 0, 0), 0.22), 90)
 
 	local StopBtn = New("TextButton", {
 		Parent = InputRow,
@@ -4228,7 +6499,7 @@ function Library:CreateWindow(cfg)
 		Visible = false,
 		ZIndex = 51,
 	})
-	Corner(StopBtn, 12)
+	Corner(StopBtn, 14)
 
 	local function SetSendingUI(sending)
 		StopBtn.Visible = sending and true or false
@@ -4382,8 +6653,11 @@ function Library:CreateWindow(cfg)
 			LayoutOrder = order or 1,
 			ZIndex = 54,
 		})
-		Corner(wrap, 8)
-		Stroke(wrap, T.Stroke, 1)
+		Corner(wrap, 14)
+		do
+			local s = Stroke(wrap, T.Accent, 1)
+			s.Transparency = 0.6
+		end
 		New("UIListLayout", {Parent = wrap, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder})
 		New("UIPadding", {Parent = wrap, PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)})
 
@@ -4504,9 +6778,12 @@ function Library:CreateWindow(cfg)
 			BorderSizePixel = 0,
 			ZIndex = 53,
 		})
-		Corner(bubble, 14)
-		if not isUser then
-			Stroke(bubble, isError and T.Error or T.Stroke, 1)
+		Corner(bubble, 16)
+		if isUser then
+			Gradient(bubble, ColorLerp(T.Accent, Color3.new(1, 1, 1), 0.18), ColorLerp(T.Accent, Color3.new(0, 0, 0), 0.22), 90)
+		else
+			local s = Stroke(bubble, isError and T.Error or T.Stroke, 1)
+			s.Transparency = 0.3
 		end
 		New("UIPadding", {Parent = bubble, PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10)})
 		New("UIListLayout", {Parent = bubble, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})
@@ -4548,7 +6825,7 @@ function Library:CreateWindow(cfg)
 				LayoutOrder = 2,
 				ZIndex = 54,
 			})
-			lbl.Text = Esc(text)
+			lbl.Text = Esc(StripUnsupportedGlyphs(text))
 		else
 			local order = 2
 			for _, seg in ipairs(SplitCodeBlocks(text)) do
@@ -4572,7 +6849,7 @@ function Library:CreateWindow(cfg)
 						ZIndex = 54,
 					})
 
-					local plain = tostring(seg.text or "")
+					local plain = StripUnsupportedGlyphs(seg.text or "")
 					if animate and State.Gemini.Typewriter and #plain > 0 and #plain <= 1400 then
 						-- typewriter reveal (plain text first, formatted at the end)
 						local myGen = Gemini.Generation
@@ -5286,6 +7563,7 @@ function Library:CreateWindow(cfg)
 		ChatInput.TextColor3 = T.Text
 		ChatInput.PlaceholderColor3 = T.TextDim
 		SendBtn.BackgroundColor3 = T.Accent
+		Gradient(SendBtn, ColorLerp(T.Accent, Color3.new(1, 1, 1), 0.22), ColorLerp(T.Accent, Color3.new(0, 0, 0), 0.22), 90)
 		StopBtn.BackgroundColor3 = T.Error
 		Avatar.BackgroundColor3 = T.Surface2
 		Stroke(Avatar, T.Accent, 2)
@@ -5325,6 +7603,11 @@ function Library:CreateWindow(cfg)
 			end)
 		end
 		State.Connections = {}
+		if WorldBlur and WorldBlur.Parent then
+			pcall(function()
+				WorldBlur:Destroy()
+			end)
+		end
 		Persist()
 		if Screen and Screen.Parent then
 			Screen:Destroy()
@@ -5340,15 +7623,28 @@ function Library:CreateWindow(cfg)
 		Main.BackgroundColor3 = T.Background
 		Main.BackgroundTransparency = T.BackgroundTransparency
 		Stroke(Main, T.Stroke, 1)
-		for _, b in ipairs({DefaultsButton, SettingsButton, MinimizeButton, HideButton, SettingsClose}) do
+		for _, b in ipairs(TopbarButtons) do
 			b.BackgroundColor3 = T.Surface2
-			b.BackgroundTransparency = T.Surface2Transparency
+			b.BackgroundTransparency = math.max(0.08, T.Surface2Transparency)
 			b.TextColor3 = T.Text
 			Stroke(b, T.Stroke, 1)
 		end
+		SettingsClose.BackgroundColor3 = T.Surface2
+		SettingsClose.BackgroundTransparency = T.Surface2Transparency
+		SettingsClose.TextColor3 = T.Text
+		Stroke(SettingsClose, T.Stroke, 1)
+		TopbarRule.BackgroundColor3 = T.Accent
+		TitleLabel.TextColor3 = T.Text
+		SubtitleLabel.TextColor3 = T.TextDim
+		Gradient(TitleLabel, Color3.new(1, 1, 1), T.Accent, 25)
 		TabBar.BackgroundColor3 = T.Surface
 		TabBar.BackgroundTransparency = T.SurfaceTransparency
 		TabIndicator.BackgroundColor3 = T.Accent
+		Gradient(TabIndicator, T.Accent, ColorLerp(T.Accent, Color3.new(1, 1, 1), 0.55), 0)
+		local ind = TabBar:FindFirstChild("KM_Glow")
+		if ind then
+			ind.ImageColor3 = T.Accent
+		end
 		Stroke(TabBar, T.Stroke, 1)
 		if UIBGWash then
 			UIBGWash.BackgroundColor3 = T.Accent
@@ -5358,6 +7654,7 @@ function Library:CreateWindow(cfg)
 		Stroke(SettingsPanel, T.Stroke, 1)
 		SettingsTitle.TextColor3 = T.Text
 		Orb.BackgroundColor3 = T.Accent
+		Gradient(Orb, ColorLerp(T.Accent, Color3.new(1, 1, 1), 0.25), ColorLerp(T.Accent, Color3.new(0, 0, 0), 0.25), 90)
 		ResizeGrip.TextColor3 = T.TextDim
 	end)
 
@@ -5372,13 +7669,17 @@ function Library:CreateWindow(cfg)
 		end
 	end
 	ApplyWallpaper(true)
+	ApplyRoundness(State.Roundness)
+	if State.Blur then
+		ApplyBlur(true)
+	end
 
 	UpdateLayout()
 	RefreshAll()
 	ClampOffsets()
 
 	-- open animation
-	Tween(MainScale, {Scale = 1}, 0.28)
+	Tween(MainScale, {Scale = State.UIScale}, 0.28)
 
 	-- auto-activate first non-internal tab once user tabs exist
 	task.defer(function()
@@ -5477,6 +7778,9 @@ function Library:CreateWindow(cfg)
 		State.OffsetY = 0
 		State.SaveSettings = true
 		State.Hotkey = Defaults.Hotkey
+		State.Roundness = Defaults.Roundness
+		State.UIScale = Defaults.UIScale
+		State.Blur = Defaults.Blur
 		ApplyLoadedState()
 		Persist()
 		Notify("Settings", "Settings reset.", 1.8, "Success")
@@ -5485,6 +7789,30 @@ function Library:CreateWindow(cfg)
 	------------------------------------------------------------------
 	-- WALLPAPER (UIBG) API
 	------------------------------------------------------------------
+
+	function API:SetRoundness(v)
+		ApplyRoundness(v)
+		if LookRefs.Roundness then
+			LookRefs.Roundness.Set(State.Roundness, true)
+		end
+		Persist()
+	end
+
+	function API:SetUIScale(v)
+		ApplyUIScale(v)
+		if LookRefs.UIScale then
+			LookRefs.UIScale.Set(State.UIScale, true)
+		end
+		Persist()
+	end
+
+	function API:SetBlur(flag)
+		ApplyBlur(flag)
+		if LookRefs.Blur then
+			LookRefs.Blur.Set(State.Blur, true)
+		end
+		Persist()
+	end
 
 	function API:SetWallpaper(value)
 		if type(value) == "number" then
@@ -5598,7 +7926,51 @@ function Library:CreateWindow(cfg)
 		}
 	end
 
-	return setmetatable(Library, {__index = API})
+	function API:LoadUniversalSuite()
+		if State.SuiteLoaded then
+			Notify("Universal Suite", "The suite is already loaded.", 2, "Warning")
+			return State.Suite
+		end
+		State.SuiteLoaded = true
+		local ok, suite = pcall(BuildUniversalSuite, self)
+		if not ok then
+			State.SuiteLoaded = false
+			Notify("Universal Suite", "Failed to load: " .. Truncate(tostring(suite), 80), 4, "Error")
+			return nil
+		end
+		State.Suite = suite
+
+		-- if the script created no tabs of its own, show the suite instead of
+		-- landing the user on the internal Gemini tab
+		task.defer(function()
+			if State.Destroyed then
+				return
+			end
+			if (not State.ActiveTab) or State.ActiveTab.Internal then
+				for _, t in ipairs(Tabs) do
+					if not t.Internal then
+						t.Activate()
+						break
+					end
+				end
+			end
+		end)
+		return suite
+	end
+
+	local Public = setmetatable(Library, {__index = API})
+
+	-- the aim/ESP/weapon suite ships with the library: it is universal, so it
+	-- is built for every window unless the script opts out.
+	if cfg.UniversalSuite ~= false then
+		task.defer(function()
+			if not State.Destroyed then
+				Public:LoadUniversalSuite()
+			end
+		end)
+	end
+
+	return Public
 end
 
 return Library
