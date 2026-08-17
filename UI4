@@ -1,23 +1,21 @@
 --// ======================================================================
---// KILOMETRES UI X V7 (NEXT-GEN · GEMINI AI · MOBILE-FIRST)
+--// KILOMETRES UI X  ·  V8  (TOP-BAR TABS · UIBG WALLPAPERS · GEMINI AI PRO)
 --//
---// Version sequence:  V1 → V3 → V5 → V7 → V9 → V2 → V4 → ... (THIS = V7)
+--// Author build for: KilometresSCP096
+--// Version sequence:  V1 -> V3 -> V5 -> V7 -> V8 (THIS)
 --//
---// V7 upgrade highlights (everything from V5 is kept, then extended):
---// ✅ All V5 APIs untouched (CreateWindow/CreateTab/CreateSection/Button/
---//    Toggle/Slider/Textbox/Dropdown/Info + Window API)
---// ✅ New "Gemini AI" tab: full chat, memory, regenerate, stop, copy,
---//    export, thinking indicator, readable errors, markdown-lite formatting
---// ✅ 14 themes (5 old + 9 new) with centralized theme engine +
---//    Success/Warning/Error colors on every theme
---// ✅ New elements: Input (alias Textbox), Keybind, ColorPicker, Label,
---//    Paragraph, Divider, dynamic-option Dropdowns
---// ✅ Buttons v2: hover/press/disabled/icon support, smooth tweens
---// ✅ Notifications v2: Info/Success/Warning/Error, stacking, callbacks
---// ✅ Window: minimize + restore, hide + floating orb, optional resize grip,
---//    position + size persistence, safe-edge clamping (mouse AND touch)
---// ✅ Settings: save / load / reset, corrupted-file recovery
---// ✅ No key system, no hardcoded API keys, no infinite RenderStepped loops
+--// V8 upgrade highlights (100% backwards compatible with V5/V7 scripts):
+--//  * TAB BAR IS NOW A TOP BAR  - horizontal, scrollable, animated sliding
+--//    indicator, icon support, auto-scroll-to-active, mobile + PC friendly.
+--//  * UIBG WALLPAPER ENGINE     - 20 built-in anime wallpapers + custom
+--//    asset ID, ON/OFF switch in Settings, opacity / darken / blur-ish tint,
+--//    Crop / Fit / Tile / Stretch modes, shuffle-on-open, live preview grid.
+--//  * GEMINI AI PRO             - avatar header, live status line, Chat and
+--//    Coder modes, Lua syntax highlighting, per-code-block Copy + Execute,
+--//    typewriter streaming, quick-prompt chips, slash commands, chat saving,
+--//    auto-retry, token/latency read-out.
+--//  * Everything from V7 kept   - 14 themes, notifications v2, keybinds,
+--//    color pickers, sliders, dropdowns, persistence, orb, resize grip.
 --// ======================================================================
 
 --// ======================================================================
@@ -551,6 +549,101 @@ local ThemeList = {
 }
 
 --// ======================================================================
+--// UIBG  ·  WALLPAPER LIBRARY (anime girl pack)
+--//
+--// Every entry is a Roblox asset id. If one of them ever gets moderated,
+--// open Settings -> Wallpaper (UIBG) -> "Custom Asset ID" and paste your
+--// own upload (the /wallpapers folder shipped with this library contains
+--// 20 ready-to-upload images).
+--// ======================================================================
+
+local WALLPAPERS = {
+	{Name = "Aesthetic Girl",   Id = 8652665149},
+	{Name = "Dark Aesthetic",   Id = 10341849885},
+	{Name = "Kawaii Girl",      Id = 11425468695},
+	{Name = "Power",            Id = 11778372953},
+	{Name = "Nezuko",           Id = 5444301611},
+	{Name = "Anya",             Id = 9657394390},
+	{Name = "Kokomi",           Id = 11761637789},
+	{Name = "Anime Girl",       Id = 14640964816},
+	{Name = "Umaru",            Id = 8598068650},
+	{Name = "White Eyes OC",    Id = 9794138570},
+	{Name = "Lo-Fi Girl",       Id = 6594109832},
+	{Name = "Pastel Girl",      Id = 1117897387},
+	{Name = "Moon Girl",        Id = 1280392000},
+	{Name = "Anime Eyes",       Id = 6033191292},
+	{Name = "Ghibli Style",     Id = 5739060035},
+	{Name = "Anime Sky",        Id = 6726922968},
+	{Name = "Sad Girl",         Id = 6239938337},
+	{Name = "Noelle",           Id = 6239942849},
+	{Name = "Girlie",           Id = 995551519},
+	{Name = "Cover Girl",       Id = 6239914883},
+}
+
+local UIBG_SCALE_MODES = {"Crop", "Fit", "Stretch", "Tile"}
+
+local function ScaleTypeFromName(name)
+	if name == "Fit" then
+		return Enum.ScaleType.Fit
+	elseif name == "Stretch" then
+		return Enum.ScaleType.Stretch
+	elseif name == "Tile" then
+		return Enum.ScaleType.Tile
+	end
+	return Enum.ScaleType.Crop
+end
+
+--// ======================================================================
+--// LUA SYNTAX HIGHLIGHTER (used by the Gemini code blocks)
+--// ======================================================================
+
+local SyntaxColors = {
+	Keyword  = "#F86D7C",
+	Global   = "#FFCB6B",
+	Function = "#82AAFF",
+	String   = "#C3E88D",
+	Number   = "#F78C6C",
+	Comment  = "#676E95",
+}
+
+local LuaKeywords = {
+	"and", "break", "do", "elseif", "else", "end", "false", "for", "function",
+	"if", "in", "local", "nil", "not", "or", "repeat", "return", "then",
+	"true", "until", "while", "continue",
+}
+
+local LuaGlobals = {
+	"game", "workspace", "script", "task", "wait", "spawn", "print", "warn",
+	"pairs", "ipairs", "tostring", "tonumber", "typeof", "Instance", "Vector3",
+	"Vector2", "CFrame", "Color3", "UDim2", "UDim", "Enum", "math", "string",
+	"table", "os", "pcall", "loadstring",
+}
+
+local function HighlightLua(code)
+	code = tostring(code or "")
+	code = code:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+	-- strings first so keywords inside them are not recolored
+	code = code:gsub('("[^"\n]*")', '<font color="' .. SyntaxColors.String .. '">%1</font>')
+	code = code:gsub("('[^'\n]*')", '<font color="' .. SyntaxColors.String .. '">%1</font>')
+	code = code:gsub("(%W)(%d+%.?%d*)", '%1<font color="' .. SyntaxColors.Number .. '">%2</font>')
+	for _, kw in ipairs(LuaKeywords) do
+		code = code:gsub("([^%w_])(" .. kw .. ")([^%w_])", '%1<font color="' .. SyntaxColors.Keyword .. '">%2</font>%3')
+		code = code:gsub("^(" .. kw .. ")([^%w_])", '<font color="' .. SyntaxColors.Keyword .. '">%1</font>%2')
+	end
+	for _, gl in ipairs(LuaGlobals) do
+		code = code:gsub("([^%w_%.])(" .. gl .. ")([^%w_])", '%1<font color="' .. SyntaxColors.Global .. '">%2</font>%3')
+	end
+	code = code:gsub("([%w_]+)(%s*%()", '<font color="' .. SyntaxColors.Function .. '">%1</font>%2')
+	code = code:gsub("(%-%-[^\n]*)", '<font color="' .. SyntaxColors.Comment .. '">%1</font>')
+	return code
+end
+
+--// Executor-safe loadstring bridge (used by Gemini "Execute" buttons)
+local LoadString = (type(loadstring) == "function" and loadstring)
+	or (type(load) == "function" and load)
+	or nil
+
+--// ======================================================================
 --// LIBRARY
 --// ======================================================================
 
@@ -590,6 +683,17 @@ function Library:CreateWindow(cfg)
 		Hotkey = Enum.KeyCode.RightShift,
 	}
 
+	local UIBGDefaults = {
+		Enabled = true,
+		Index = 1,
+		CustomId = "",
+		Opacity = 0.45,   -- 0 = fully visible wallpaper, 1 = invisible
+		Darken = 0.35,    -- black scrim strength for text readability
+		ScaleMode = "Crop",
+		Shuffle = false,
+		Parallax = true,
+	}
+
 	local State = {
 		ThemeName = Defaults.ThemeName,
 		Width = Defaults.Width,
@@ -612,6 +716,20 @@ function Library:CreateWindow(cfg)
 			Temperature = 0.7,
 			MaxTokens = 1024,
 			SystemPrompt = "",
+			Mode = "Chat",          -- "Chat" | "Coder"
+			Typewriter = true,
+			SaveChat = true,
+			AutoRetry = true,
+		},
+		UIBG = {
+			Enabled = UIBGDefaults.Enabled,
+			Index = UIBGDefaults.Index,
+			CustomId = UIBGDefaults.CustomId,
+			Opacity = UIBGDefaults.Opacity,
+			Darken = UIBGDefaults.Darken,
+			ScaleMode = UIBGDefaults.ScaleMode,
+			Shuffle = UIBGDefaults.Shuffle,
+			Parallax = UIBGDefaults.Parallax,
 		},
 	}
 
@@ -624,6 +742,10 @@ function Library:CreateWindow(cfg)
 	local ApplyLoadedState
 	local WidthSlider
 	local HeightSlider
+	local ApplyWallpaper
+	local UIBGRefs = {}
+	local SyncTabIndicator
+	local GeminiHooks = {}
 
 	local GeminiRefs = {}
 
@@ -668,6 +790,20 @@ function Library:CreateWindow(cfg)
 				Temperature = State.Gemini.Temperature,
 				MaxTokens = State.Gemini.MaxTokens,
 				SystemPrompt = State.Gemini.SystemPrompt,
+				Mode = State.Gemini.Mode,
+				Typewriter = State.Gemini.Typewriter,
+				SaveChat = State.Gemini.SaveChat,
+				AutoRetry = State.Gemini.AutoRetry,
+			},
+			UIBG = {
+				Enabled = State.UIBG.Enabled,
+				Index = State.UIBG.Index,
+				CustomId = State.UIBG.CustomId,
+				Opacity = State.UIBG.Opacity,
+				Darken = State.UIBG.Darken,
+				ScaleMode = State.UIBG.ScaleMode,
+				Shuffle = State.UIBG.Shuffle,
+				Parallax = State.UIBG.Parallax,
 			},
 		}
 		local json = SafeJSONEncode(payload)
@@ -715,6 +851,26 @@ function Library:CreateWindow(cfg)
 			if type(g.Temperature) == "number" then State.Gemini.Temperature = Clamp(g.Temperature, 0, 2) end
 			if type(g.MaxTokens) == "number" then State.Gemini.MaxTokens = Clamp(math.floor(g.MaxTokens), 64, 8192) end
 			if type(g.SystemPrompt) == "string" then State.Gemini.SystemPrompt = g.SystemPrompt end
+			if g.Mode == "Chat" or g.Mode == "Coder" then State.Gemini.Mode = g.Mode end
+			if type(g.Typewriter) == "boolean" then State.Gemini.Typewriter = g.Typewriter end
+			if type(g.SaveChat) == "boolean" then State.Gemini.SaveChat = g.SaveChat end
+			if type(g.AutoRetry) == "boolean" then State.Gemini.AutoRetry = g.AutoRetry end
+		end
+
+		if type(data.UIBG) == "table" then
+			local w = data.UIBG
+			if type(w.Enabled) == "boolean" then State.UIBG.Enabled = w.Enabled end
+			if type(w.Index) == "number" then State.UIBG.Index = Clamp(math.floor(w.Index), 0, #WALLPAPERS) end
+			if type(w.CustomId) == "string" then State.UIBG.CustomId = w.CustomId end
+			if type(w.Opacity) == "number" then State.UIBG.Opacity = Clamp(w.Opacity, 0, 1) end
+			if type(w.Darken) == "number" then State.UIBG.Darken = Clamp(w.Darken, 0, 1) end
+			if type(w.ScaleMode) == "string" then
+				for _, m in ipairs(UIBG_SCALE_MODES) do
+					if m == w.ScaleMode then State.UIBG.ScaleMode = m end
+				end
+			end
+			if type(w.Shuffle) == "boolean" then State.UIBG.Shuffle = w.Shuffle end
+			if type(w.Parallax) == "boolean" then State.UIBG.Parallax = w.Parallax end
 		end
 	end
 
@@ -898,6 +1054,115 @@ function Library:CreateWindow(cfg)
 
 	local MainScale = New("UIScale", {Parent = Main, Scale = 0.95})
 
+	------------------------------------------------------------------
+	-- UIBG  ·  WALLPAPER LAYER (sits behind every other element)
+	------------------------------------------------------------------
+
+	local UIBGHolder = New("Frame", {
+		Parent = Main,
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		ClipsDescendants = true,
+		ZIndex = 0,
+	})
+	Corner(UIBGHolder, 20)
+
+	local UIBGImage = New("ImageLabel", {
+		Parent = UIBGHolder,
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(1.08, 1.08),
+		Image = "",
+		ImageTransparency = 0.45,
+		ScaleType = Enum.ScaleType.Crop,
+		ZIndex = 0,
+	})
+
+	-- readability scrim + accent wash so text never fights the artwork
+	local UIBGScrim = New("Frame", {
+		Parent = UIBGHolder,
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 0.65,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 1,
+	})
+
+	local UIBGWash = New("Frame", {
+		Parent = UIBGHolder,
+		BackgroundColor3 = Theme().Accent,
+		BackgroundTransparency = 0.92,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = 1,
+	})
+	New("UIGradient", {
+		Parent = UIBGWash,
+		Rotation = 90,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.35),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+	})
+
+	local UIBGParallax = {X = 0, Y = 0}
+
+	ApplyWallpaper = function(silent)
+		local w = State.UIBG
+		local asset = nil
+		local custom = Trim(w.CustomId)
+		if custom ~= "" then
+			if custom:match("^%d+$") then
+				asset = "rbxassetid://" .. custom
+			else
+				asset = custom
+			end
+		elseif w.Index >= 1 and WALLPAPERS[w.Index] then
+			asset = "rbxassetid://" .. tostring(WALLPAPERS[w.Index].Id)
+		end
+
+		if not w.Enabled or not asset then
+			UIBGHolder.Visible = false
+			return
+		end
+
+		UIBGHolder.Visible = true
+		UIBGImage.Image = asset
+		UIBGImage.ScaleType = ScaleTypeFromName(w.ScaleMode)
+		if w.ScaleMode == "Tile" then
+			UIBGImage.TileSize = UDim2.fromScale(0.34, 0.34)
+		end
+		Tween(UIBGImage, {ImageTransparency = Clamp(w.Opacity, 0, 1)}, 0.25)
+		Tween(UIBGScrim, {BackgroundTransparency = 1 - Clamp(w.Darken, 0, 1)}, 0.25)
+		UIBGWash.BackgroundColor3 = Theme().Accent
+		if not silent then
+			-- soft fade-in whenever the picture actually changes
+			UIBGImage.ImageTransparency = 1
+			Tween(UIBGImage, {ImageTransparency = Clamp(w.Opacity, 0, 1)}, 0.35)
+		end
+	end
+
+	local function ShuffleWallpaper(notifyIt)
+		if #WALLPAPERS == 0 then
+			return
+		end
+		local newIndex = State.UIBG.Index
+		if #WALLPAPERS > 1 then
+			repeat
+				newIndex = math.random(1, #WALLPAPERS)
+			until newIndex ~= State.UIBG.Index
+		end
+		State.UIBG.Index = newIndex
+		State.UIBG.CustomId = ""
+		ApplyWallpaper()
+		Persist()
+		if UIBGRefs.Refresh then
+			UIBGRefs.Refresh()
+		end
+		return newIndex
+	end
+
 	local function EffectiveSize()
 		local vp = Camera and Camera.ViewportSize or Vector2.new(1280, 720)
 		local ew = Clamp(State.Width, 300, math.max(320, math.floor(vp.X) - 16))
@@ -966,39 +1231,73 @@ function Library:CreateWindow(cfg)
 	local MinimizeButton  = TopbarButton(-80,  "–", 18)
 	local HideButton      = TopbarButton(-42,  "×", 16)
 
-	-- navigation (landscape sidebar + portrait top bar)
-	local LandscapeNav = New("ScrollingFrame", {
-		Parent = Main,
-		BackgroundColor3 = Theme().Surface,
-		BackgroundTransparency = Theme().SurfaceTransparency,
-		BorderSizePixel = 0,
-		ScrollBarThickness = 4,
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		CanvasSize = UDim2.fromOffset(0, 0),
-		ScrollingDirection = Enum.ScrollingDirection.Y,
-		ZIndex = 20,
-	})
-	Corner(LandscapeNav, 18)
-	Stroke(LandscapeNav, Theme().Stroke, 1)
-	New("UIPadding", {Parent = LandscapeNav, PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12), PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12)})
-	New("UIListLayout", {Parent = LandscapeNav, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder})
+	-- subtle parallax: the wallpaper drifts against pointer movement
+	AddConn(UIS.InputChanged:Connect(function(input)
+		if State.Destroyed or not State.UIBG.Parallax or not UIBGHolder.Visible then
+			return
+		end
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement
+			and input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		local vp = Camera and Camera.ViewportSize or Vector2.new(1280, 720)
+		local nx = Clamp((input.Position.X / math.max(1, vp.X)) - 0.5, -0.5, 0.5)
+		local ny = Clamp((input.Position.Y / math.max(1, vp.Y)) - 0.5, -0.5, 0.5)
+		UIBGParallax.X = -nx * 14
+		UIBGParallax.Y = -ny * 10
+		UIBGImage.Position = UDim2.new(0.5, UIBGParallax.X, 0.5, UIBGParallax.Y)
+	end))
 
-	local PortraitNav = New("ScrollingFrame", {
+	------------------------------------------------------------------
+	-- TOP TAB BAR  (V8: tabs are a horizontal top bar on every device)
+	------------------------------------------------------------------
+
+	local TabBar = New("ScrollingFrame", {
 		Parent = Main,
 		BackgroundColor3 = Theme().Surface,
 		BackgroundTransparency = Theme().SurfaceTransparency,
 		BorderSizePixel = 0,
-		Visible = false,
-		ScrollBarThickness = 4,
+		ScrollBarThickness = 0,
+		ScrollingDirection = Enum.ScrollingDirection.X,
 		AutomaticCanvasSize = Enum.AutomaticSize.X,
 		CanvasSize = UDim2.fromOffset(0, 0),
-		ScrollingDirection = Enum.ScrollingDirection.X,
+		ElasticBehavior = Enum.ElasticBehavior.WhenScrollable,
+		ClipsDescendants = true,
 		ZIndex = 20,
 	})
-	Corner(PortraitNav, 18)
-	Stroke(PortraitNav, Theme().Stroke, 1)
-	New("UIPadding", {Parent = PortraitNav, PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10)})
-	New("UIListLayout", {Parent = PortraitNav, Padding = UDim.new(0, 8), FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder})
+	Corner(TabBar, 16)
+	Stroke(TabBar, Theme().Stroke, 1)
+
+	-- the strip holds the buttons (list layout), the indicator is a sibling
+	-- so the layout never tries to reposition it
+	local TabStrip = New("Frame", {
+		Parent = TabBar,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(0, 0, 1, 0),
+		AutomaticSize = Enum.AutomaticSize.X,
+		ZIndex = 21,
+	})
+	New("UIPadding", {Parent = TabStrip, PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6)})
+	New("UIListLayout", {
+		Parent = TabStrip,
+		Padding = UDim.new(0, 6),
+		FillDirection = Enum.FillDirection.Horizontal,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	})
+
+	local TabIndicator = New("Frame", {
+		Parent = TabBar,
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 10, 1, -5),
+		Size = UDim2.fromOffset(0, 3),
+		BackgroundColor3 = Theme().Accent,
+		BackgroundTransparency = 0.05,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 28,
+	})
+	Corner(TabIndicator, 3)
 
 	local PageHolder = New("Frame", {Parent = Main, BackgroundTransparency = 1, ZIndex = 30})
 
@@ -1130,10 +1429,11 @@ function Library:CreateWindow(cfg)
 		return panel
 	end
 
-	local ThemePanel  = MakePanel("Appearance", 1)
-	local LayoutPanel = MakePanel("Layout", 2)
-	local GeminiPanel = MakePanel("Gemini AI", 3)
-	local MiscPanel   = MakePanel("Options", 4)
+	local ThemePanel     = MakePanel("Appearance", 1)
+	local WallpaperPanel = MakePanel("Wallpaper (UIBG)", 2)
+	local LayoutPanel    = MakePanel("Layout", 3)
+	local GeminiPanel    = MakePanel("Gemini AI", 4)
+	local MiscPanel      = MakePanel("Options", 5)
 
 	------------------------------------------------------------------
 	-- FLOATING RESTORE ORB (draggable, clamped, pulsing)
@@ -1343,13 +1643,7 @@ function Library:CreateWindow(cfg)
 			Tween(MainScale, {Scale = 1}, 0.22, Enum.EasingStyle.Back)
 			PageHolder.Visible = not SettingsOverlay.Visible
 			if not SettingsOverlay.Visible then
-				if IsPortrait() then
-					PortraitNav.Visible = true
-					LandscapeNav.Visible = false
-				else
-					LandscapeNav.Visible = true
-					PortraitNav.Visible = false
-				end
+				TabBar.Visible = true
 			end
 			ClampOffsets()
 		end
@@ -1362,8 +1656,7 @@ function Library:CreateWindow(cfg)
 		State.Minimized = flag and true or false
 		local ew = EffectiveSize()
 		if State.Minimized then
-			LandscapeNav.Visible = false
-			PortraitNav.Visible = false
+			TabBar.Visible = false
 			PageHolder.Visible = false
 			SettingsOverlay.Visible = false
 			ResizeGrip.Visible = false
@@ -1388,8 +1681,11 @@ function Library:CreateWindow(cfg)
 		-- animated transitions on the structural surfaces
 		local T = Theme()
 		Tween(Main, {BackgroundColor3 = T.Background, BackgroundTransparency = T.BackgroundTransparency}, 0.28)
-		Tween(LandscapeNav, {BackgroundColor3 = T.Surface, BackgroundTransparency = T.SurfaceTransparency}, 0.28)
-		Tween(PortraitNav, {BackgroundColor3 = T.Surface, BackgroundTransparency = T.SurfaceTransparency}, 0.28)
+		Tween(TabBar, {BackgroundColor3 = T.Surface, BackgroundTransparency = T.SurfaceTransparency}, 0.28)
+		Tween(TabIndicator, {BackgroundColor3 = T.Accent}, 0.28)
+		if UIBGWash then
+			Tween(UIBGWash, {BackgroundColor3 = T.Accent}, 0.28)
+		end
 		Tween(SettingsPanel, {BackgroundColor3 = T.Surface, BackgroundTransparency = T.SurfaceTransparency}, 0.28)
 		Tween(Orb, {BackgroundColor3 = T.Accent}, 0.28)
 		Persist()
@@ -1404,28 +1700,19 @@ function Library:CreateWindow(cfg)
 		Main.Size = UDim2.fromOffset(ew, eh)
 		ClampOffsets()
 		local portrait = IsPortrait()
-		if SettingsOverlay.Visible then
-			LandscapeNav.Visible = false
-			PortraitNav.Visible = false
-		elseif portrait then
-			LandscapeNav.Visible = false
-			PortraitNav.Visible = true
-		else
-			LandscapeNav.Visible = true
-			PortraitNav.Visible = false
-		end
+		TabBar.Visible = not SettingsOverlay.Visible
 
-		PortraitNav.Position = UDim2.new(0, 10, 0, 64)
-		PortraitNav.Size = UDim2.new(1, -20, 0, 54)
-		LandscapeNav.Position = UDim2.new(0, 12, 0, 64)
-		LandscapeNav.Size = UDim2.new(0, 216, 1, -76)
+		local barHeight = portrait and 44 or 46
+		TabBar.Position = UDim2.new(0, 12, 0, 60)
+		TabBar.Size = UDim2.new(1, -24, 0, barHeight)
 
-		if portrait then
-			PageHolder.Position = UDim2.new(0, 10, 0, 126)
-			PageHolder.Size = UDim2.new(1, -20, 1, -136)
-		else
-			PageHolder.Position = UDim2.new(0, 240, 0, 64)
-			PageHolder.Size = UDim2.new(1, -252, 1, -76)
+		PageHolder.Position = UDim2.new(0, 12, 0, 60 + barHeight + 8)
+		PageHolder.Size = UDim2.new(1, -24, 1, -(60 + barHeight + 18))
+
+		if SyncTabIndicator then
+			task.defer(function()
+				pcall(SyncTabIndicator, false)
+			end)
 		end
 	end
 
@@ -2170,6 +2457,11 @@ function Library:CreateWindow(cfg)
 				end
 			end
 		end)
+		--// alias so scripts can do drop.SetOptions({...}) as well
+		api.SetOptions = api.Refresh
+		api.Options = Dual(function()
+			return options
+		end)
 		return WrapInstance(api, Holder)
 	end
 
@@ -2641,6 +2933,244 @@ function Library:CreateWindow(cfg)
 		CreateThemeButton(info.Label, info.Key, i)
 	end
 
+	------------------------------------------------------------------
+	-- WALLPAPER (UIBG) SETTINGS
+	------------------------------------------------------------------
+
+	CreateInfo(WallpaperPanel, "20 built-in anime wallpapers. UIBD/UIBG switch below.")
+
+	do
+	local uibgToggle = CreateToggle(WallpaperPanel, "UIBG Wallpaper (On/Off)", State.UIBG.Enabled, function(v)
+		State.UIBG.Enabled = v
+		ApplyWallpaper(true)
+		Persist()
+		Notify("UIBG", v and "Wallpaper enabled." or "Wallpaper disabled.", 1.6, v and "Success" or "Info")
+	end)
+	UIBGRefs.Toggle = uibgToggle
+
+	-- picker grid: every wallpaper is previewed live
+	local WallScroll = New("ScrollingFrame", {
+		Parent = WallpaperPanel,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 190),
+		ScrollBarThickness = 4,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.fromOffset(0, 0),
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		LayoutOrder = 3,
+		ZIndex = 85,
+	})
+	local WallGrid = New("Frame", {
+		Parent = WallScroll,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		ZIndex = 85,
+	})
+	New("UIGridLayout", {
+		Parent = WallGrid,
+		CellSize = UDim2.new(0.25, -8, 0, 58),
+		CellPadding = UDim2.fromOffset(8, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	})
+
+	local WallCells = {}
+
+	local function SelectWallpaper(index, notifyIt)
+		State.UIBG.Index = index
+		State.UIBG.CustomId = ""
+		if not State.UIBG.Enabled then
+			State.UIBG.Enabled = true
+			uibgToggle.Set(true, true)
+		end
+		ApplyWallpaper()
+		Persist()
+		if UIBGRefs.Refresh then
+			UIBGRefs.Refresh()
+		end
+		if notifyIt and WALLPAPERS[index] then
+			Notify("UIBG", "Wallpaper: " .. WALLPAPERS[index].Name, 1.5, "Success")
+		end
+	end
+
+	for i, wp in ipairs(WALLPAPERS) do
+		local cell = New("TextButton", {
+			Parent = WallGrid,
+			BackgroundColor3 = Theme().Surface,
+			BackgroundTransparency = 0.2,
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+			LayoutOrder = i,
+			ClipsDescendants = true,
+			ZIndex = 86,
+		})
+		Corner(cell, 10)
+		Stroke(cell, Theme().Stroke, 1)
+
+		New("ImageLabel", {
+			Parent = cell,
+			BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1),
+			Image = "rbxassetid://" .. tostring(wp.Id),
+			ScaleType = Enum.ScaleType.Crop,
+			ZIndex = 86,
+		})
+
+		local caption = New("TextLabel", {
+			Parent = cell,
+			AnchorPoint = Vector2.new(0, 1),
+			Position = UDim2.new(0, 0, 1, 0),
+			Size = UDim2.new(1, 0, 0, 16),
+			BackgroundColor3 = Color3.new(0, 0, 0),
+			BackgroundTransparency = 0.35,
+			BorderSizePixel = 0,
+			Text = tostring(i) .. ". " .. wp.Name,
+			TextColor3 = Color3.new(1, 1, 1),
+			TextSize = 9,
+			Font = Enum.Font.GothamMedium,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			ZIndex = 88,
+		})
+
+		cell.MouseButton1Click:Connect(function()
+			SelectWallpaper(i, true)
+		end)
+
+		WallCells[i] = {Button = cell, Caption = caption}
+	end
+
+	-- prev / random / next row
+	local WallRow = New("Frame", {
+		Parent = WallpaperPanel,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 34),
+		LayoutOrder = 4,
+		ZIndex = 85,
+	})
+	New("UIListLayout", {
+		Parent = WallRow,
+		Padding = UDim.new(0, 8),
+		FillDirection = Enum.FillDirection.Horizontal,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	})
+
+	local function RowButton(label, order, cb)
+		local b = New("TextButton", {
+			Parent = WallRow,
+			Size = UDim2.new(0.333, -6, 1, 0),
+			BackgroundColor3 = Theme().Surface,
+			BackgroundTransparency = Theme().SurfaceTransparency,
+			BorderSizePixel = 0,
+			Text = label,
+			TextColor3 = Theme().Text,
+			TextSize = 12,
+			Font = Enum.Font.GothamMedium,
+			AutoButtonColor = false,
+			LayoutOrder = order,
+			ZIndex = 86,
+		})
+		Corner(b, 10)
+		Stroke(b, Theme().Stroke, 1)
+		b.MouseButton1Click:Connect(cb)
+		AddRefresher(function()
+			b.BackgroundColor3 = Theme().Surface
+			b.BackgroundTransparency = Theme().SurfaceTransparency
+			b.TextColor3 = Theme().Text
+			Stroke(b, Theme().Stroke, 1)
+		end)
+		return b
+	end
+
+	RowButton("< Prev", 1, function()
+		local i = State.UIBG.Index - 1
+		if i < 1 then i = #WALLPAPERS end
+		SelectWallpaper(i, true)
+	end)
+	RowButton("Shuffle", 2, function()
+		local i = ShuffleWallpaper(true)
+		if i and WALLPAPERS[i] then
+			Notify("UIBG", "Wallpaper: " .. WALLPAPERS[i].Name, 1.5, "Success")
+		end
+	end)
+	RowButton("Next >", 3, function()
+		local i = State.UIBG.Index + 1
+		if i > #WALLPAPERS then i = 1 end
+		SelectWallpaper(i, true)
+	end)
+
+	local customInput = CreateInput(WallpaperPanel, "Custom Asset ID", {
+		Placeholder = "e.g. 8652665149 (your own upload)",
+		Default = State.UIBG.CustomId,
+		Clear = true,
+		Callback = function(txt)
+			State.UIBG.CustomId = Trim(txt)
+			if State.UIBG.CustomId ~= "" then
+				State.UIBG.Enabled = true
+				uibgToggle.Set(true, true)
+			end
+			ApplyWallpaper()
+			Persist()
+			if UIBGRefs.Refresh then
+				UIBGRefs.Refresh()
+			end
+		end,
+	})
+	UIBGRefs.CustomId = customInput
+
+	local fadeSlider = CreateSlider(WallpaperPanel, "Wallpaper Fade", 0, 1, State.UIBG.Opacity, function(v)
+		State.UIBG.Opacity = v
+		ApplyWallpaper(true)
+		Persist()
+	end, 0.05)
+	UIBGRefs.Opacity = fadeSlider
+
+	local darkSlider = CreateSlider(WallpaperPanel, "Darken (readability)", 0, 1, State.UIBG.Darken, function(v)
+		State.UIBG.Darken = v
+		ApplyWallpaper(true)
+		Persist()
+	end, 0.05)
+	UIBGRefs.Darken = darkSlider
+
+	local scaleDrop = CreateDropdown(WallpaperPanel, "Scale Mode", UIBG_SCALE_MODES, State.UIBG.ScaleMode, function(choice)
+		State.UIBG.ScaleMode = tostring(choice)
+		ApplyWallpaper(true)
+		Persist()
+	end)
+	UIBGRefs.ScaleMode = scaleDrop
+
+	local shuffleToggle = CreateToggle(WallpaperPanel, "Shuffle On Launch", State.UIBG.Shuffle, function(v)
+		State.UIBG.Shuffle = v
+		Persist()
+	end)
+	UIBGRefs.Shuffle = shuffleToggle
+
+	local parallaxToggle = CreateToggle(WallpaperPanel, "Parallax Motion", State.UIBG.Parallax, function(v)
+		State.UIBG.Parallax = v
+		if not v then
+			UIBGImage.Position = UDim2.fromScale(0.5, 0.5)
+		end
+		Persist()
+	end)
+	UIBGRefs.Parallax = parallaxToggle
+
+	UIBGRefs.Refresh = function()
+		for i, cell in ipairs(WallCells) do
+			local active = (State.UIBG.Index == i and Trim(State.UIBG.CustomId) == "")
+			Stroke(cell.Button, active and Theme().Accent or Theme().Stroke, active and 2 or 1)
+			cell.Caption.BackgroundColor3 = active and Theme().Accent or Color3.new(0, 0, 0)
+			cell.Caption.BackgroundTransparency = active and 0.1 or 0.35
+		end
+	end
+	UIBGRefs.Refresh()
+	AddRefresher(function()
+		if UIBGRefs.Refresh then
+			UIBGRefs.Refresh()
+		end
+	end)
+	end -- wallpaper settings block
+
 	-- Layout: size sliders + reset
 	WidthSlider = CreateSlider(LayoutPanel, "Custom X Size", 340, 1400, State.Width, function(v)
 		State.Width = math.floor(v)
@@ -2673,6 +3203,7 @@ function Library:CreateWindow(cfg)
 	-- Gemini AI settings
 	CreateInfo(GeminiPanel, "Your key stays on this device. Never share it.")
 
+	do
 	local apiKeyInput = CreateInput(GeminiPanel, "API Key", {
 		Placeholder = "Paste your Gemini API key",
 		Default = State.Gemini.ApiKey,
@@ -2742,6 +3273,35 @@ function Library:CreateWindow(cfg)
 	})
 	GeminiRefs.SystemPrompt = sysInput
 
+	local modeDrop = CreateDropdown(GeminiPanel, "Response Mode", {"Chat", "Coder"}, State.Gemini.Mode, function(choice)
+		if GeminiHooks.SetMode then
+			GeminiHooks.SetMode(tostring(choice))
+		else
+			State.Gemini.Mode = tostring(choice)
+			Persist()
+		end
+	end)
+	GeminiRefs.Mode = modeDrop
+
+	local typeToggle = CreateToggle(GeminiPanel, "Typewriter Streaming", State.Gemini.Typewriter, function(v)
+		State.Gemini.Typewriter = v
+		Persist()
+	end)
+	GeminiRefs.Typewriter = typeToggle
+
+	local saveChatToggle = CreateToggle(GeminiPanel, "Remember Chat History", State.Gemini.SaveChat, function(v)
+		State.Gemini.SaveChat = v
+		Persist()
+	end)
+	GeminiRefs.SaveChat = saveChatToggle
+
+	local retryToggle = CreateToggle(GeminiPanel, "Auto-Retry On Network Error", State.Gemini.AutoRetry, function(v)
+		State.Gemini.AutoRetry = v
+		Persist()
+	end)
+	GeminiRefs.AutoRetry = retryToggle
+	end -- gemini settings block
+
 	-- Options: save toggle, hotkey, reset settings
 	local saveToggle = CreateToggle(MiscPanel, "Save Settings Forever", State.SaveSettings, function(v)
 		State.SaveSettings = v
@@ -2781,6 +3341,18 @@ function Library:CreateWindow(cfg)
 		State.Gemini.Temperature = 0.7
 		State.Gemini.MaxTokens = 1024
 		State.Gemini.SystemPrompt = ""
+		State.Gemini.Mode = "Chat"
+		State.Gemini.Typewriter = true
+		State.Gemini.SaveChat = true
+		State.Gemini.AutoRetry = true
+		State.UIBG.Enabled = UIBGDefaults.Enabled
+		State.UIBG.Index = UIBGDefaults.Index
+		State.UIBG.CustomId = UIBGDefaults.CustomId
+		State.UIBG.Opacity = UIBGDefaults.Opacity
+		State.UIBG.Darken = UIBGDefaults.Darken
+		State.UIBG.ScaleMode = UIBGDefaults.ScaleMode
+		State.UIBG.Shuffle = UIBGDefaults.Shuffle
+		State.UIBG.Parallax = UIBGDefaults.Parallax
 		if ApplyLoadedState then
 			ApplyLoadedState()
 		end
@@ -2804,6 +3376,26 @@ function Library:CreateWindow(cfg)
 		GeminiRefs.Temperature.Set(State.Gemini.Temperature, true)
 		GeminiRefs.MaxTokens.Set(State.Gemini.MaxTokens, true)
 		GeminiRefs.SystemPrompt.Set(State.Gemini.SystemPrompt)
+		if GeminiRefs.Mode then
+			GeminiRefs.Mode.Set(State.Gemini.Mode, true)
+			GeminiRefs.Typewriter.Set(State.Gemini.Typewriter, true)
+			GeminiRefs.SaveChat.Set(State.Gemini.SaveChat, true)
+			GeminiRefs.AutoRetry.Set(State.Gemini.AutoRetry, true)
+			if GeminiHooks.SetMode then
+				GeminiHooks.SetMode(State.Gemini.Mode)
+			end
+		end
+		if UIBGRefs.Toggle then
+			UIBGRefs.Toggle.Set(State.UIBG.Enabled, true)
+			UIBGRefs.CustomId.Set(State.UIBG.CustomId)
+			UIBGRefs.Opacity.Set(State.UIBG.Opacity, true)
+			UIBGRefs.Darken.Set(State.UIBG.Darken, true)
+			UIBGRefs.ScaleMode.Set(State.UIBG.ScaleMode, true)
+			UIBGRefs.Shuffle.Set(State.UIBG.Shuffle, true)
+			UIBGRefs.Parallax.Set(State.UIBG.Parallax, true)
+			UIBGRefs.Refresh()
+		end
+		ApplyWallpaper(true)
 		if State.Minimized then
 			SetMinimized(false)
 		end
@@ -2843,8 +3435,7 @@ function Library:CreateWindow(cfg)
 		local newState = not SettingsOverlay.Visible
 		SettingsOverlay.Visible = newState
 		if newState then
-			LandscapeNav.Visible = false
-			PortraitNav.Visible = false
+			TabBar.Visible = false
 			PageHolder.Visible = false
 			local s = New("UIScale", {Parent = SettingsPanel, Scale = 0.96})
 			Tween(s, {Scale = 1}, 0.18)
@@ -2898,6 +3489,56 @@ function Library:CreateWindow(cfg)
 
 	local Tabs = {}
 
+	--// slides the accent underline under the active tab and keeps that tab
+	--// inside the visible part of the (scrollable) top bar
+	SyncTabIndicator = function(animated)
+		local active = nil
+		for _, t in ipairs(Tabs) do
+			if t.Active then
+				active = t
+				break
+			end
+		end
+		if not active or not active.Button or not active.Button.Parent or not TabBar.Visible then
+			TabIndicator.Visible = false
+			return
+		end
+
+		local barAbs = TabBar.AbsolutePosition.X
+		local btnAbs = active.Button.AbsolutePosition.X
+		local width = active.Button.AbsoluteSize.X
+		if width <= 0 then
+			-- AutomaticSize has not resolved yet: try again next frame
+			task.delay(0.08, function()
+				if not State.Destroyed then
+					pcall(SyncTabIndicator, false)
+				end
+			end)
+			return
+		end
+		local x = (btnAbs - barAbs) + TabBar.CanvasPosition.X
+
+		TabIndicator.Visible = true
+		if animated == false then
+			TabIndicator.Position = UDim2.new(0, x, 1, -4)
+			TabIndicator.Size = UDim2.fromOffset(width, 3)
+		else
+			Tween(TabIndicator, {
+				Position = UDim2.new(0, x, 1, -4),
+				Size = UDim2.fromOffset(width, 3),
+			}, 0.22, Enum.EasingStyle.Quint)
+		end
+
+		-- auto scroll the active tab into view
+		local viewW = TabBar.AbsoluteSize.X
+		local canvasX = TabBar.CanvasPosition.X
+		if x < canvasX then
+			Tween(TabBar, {CanvasPosition = Vector2.new(math.max(0, x - 12), 0)}, 0.22)
+		elseif (x + width) > (canvasX + viewW) then
+			Tween(TabBar, {CanvasPosition = Vector2.new(math.max(0, x + width - viewW + 12), 0)}, 0.22)
+		end
+	end
+
 	function Library:CreateTab(name, opts)
 		opts = opts or {}
 		local Tab = {}
@@ -2912,9 +3553,12 @@ function Library:CreateWindow(cfg)
 			PortButton = nil,
 		}
 
-		local LandButton = New("TextButton", {
-			Parent = LandscapeNav,
-			Size = UDim2.new(1, 0, 0, 42),
+		local icon = opts.Icon and tostring(opts.Icon) or nil
+
+		local TabButton = New("TextButton", {
+			Parent = TabStrip,
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.new(0, 0, 1, 0),
 			BackgroundColor3 = Theme().Surface2,
 			BackgroundTransparency = Theme().Surface2Transparency,
 			BorderSizePixel = 0,
@@ -2923,48 +3567,59 @@ function Library:CreateWindow(cfg)
 			LayoutOrder = order,
 			ZIndex = 25,
 		})
-		Corner(LandButton, 12)
-		Stroke(LandButton, Theme().Stroke, 1)
+		Corner(TabButton, 11)
+		Stroke(TabButton, Theme().Stroke, 1)
+		New("UIPadding", {Parent = TabButton, PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14)})
+		New("UIListLayout", {
+			Parent = TabButton,
+			Padding = UDim.new(0, 6),
+			FillDirection = Enum.FillDirection.Horizontal,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		})
 
-		local LandLabel = New("TextLabel", {
-			Parent = LandButton,
+		local TabIcon
+		if icon then
+			TabIcon = New("TextLabel", {
+				Parent = TabButton,
+				BackgroundTransparency = 1,
+				AutomaticSize = Enum.AutomaticSize.X,
+				Size = UDim2.new(0, 0, 1, 0),
+				Text = icon,
+				TextColor3 = Theme().TextDim,
+				TextSize = 14,
+				Font = Enum.Font.GothamBold,
+				LayoutOrder = 1,
+				ZIndex = 26,
+			})
+		end
+
+		local TabLabel = New("TextLabel", {
+			Parent = TabButton,
 			BackgroundTransparency = 1,
-			Position = UDim2.fromOffset(14, 0),
-			Size = UDim2.new(1, -28, 1, 0),
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.new(0, 0, 1, 0),
 			Text = name,
 			TextColor3 = Theme().TextDim,
-			TextSize = 14,
+			TextSize = 13,
 			Font = Enum.Font.GothamMedium,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextTruncate = Enum.TextTruncate.AtEnd,
+			LayoutOrder = 2,
 			ZIndex = 26,
 		})
 
-		local PortButton = New("TextButton", {
-			Parent = PortraitNav,
-			Size = UDim2.fromOffset(110, 36),
-			BackgroundColor3 = Theme().Surface2,
-			BackgroundTransparency = Theme().Surface2Transparency,
-			BorderSizePixel = 0,
-			Text = "",
-			AutoButtonColor = false,
-			LayoutOrder = order,
-			ZIndex = 25,
-		})
-		Corner(PortButton, 12)
-		Stroke(PortButton, Theme().Stroke, 1)
+		local TabScale = New("UIScale", {Parent = TabButton, Scale = 1})
 
-		local PortLabel = New("TextLabel", {
-			Parent = PortButton,
-			BackgroundTransparency = 1,
-			Size = UDim2.fromScale(1, 1),
-			Text = name,
-			TextColor3 = Theme().TextDim,
-			TextSize = 12,
-			Font = Enum.Font.GothamMedium,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			ZIndex = 26,
-		})
+		TabButton.MouseEnter:Connect(function()
+			if not Data.Active then
+				Tween(TabButton, {BackgroundColor3 = ColorLerp(Theme().Surface2, Theme().Accent, 0.22)}, 0.12)
+			end
+		end)
+		TabButton.MouseLeave:Connect(function()
+			if not Data.Active then
+				Tween(TabButton, {BackgroundColor3 = Theme().Surface2}, 0.15)
+			end
+		end)
 
 		local Page
 		if opts.Raw then
@@ -2992,10 +3647,14 @@ function Library:CreateWindow(cfg)
 			New("UIListLayout", {Parent = Page, Padding = UDim.new(0, 12), SortOrder = Enum.SortOrder.LayoutOrder})
 		end
 
-		Data.LandButton = LandButton
-		Data.LandLabel = LandLabel
-		Data.PortButton = PortButton
-		Data.PortLabel = PortLabel
+		Data.Button = TabButton
+		Data.Label = TabLabel
+		Data.Icon = TabIcon
+		-- V5/V7 compatibility aliases (old scripts poked these directly)
+		Data.LandButton = TabButton
+		Data.LandLabel = TabLabel
+		Data.PortButton = TabButton
+		Data.PortLabel = TabLabel
 		Data.Page = Page
 		Data.Order = order
 		table.insert(Tabs, Data)
@@ -3007,35 +3666,46 @@ function Library:CreateWindow(cfg)
 			for _, t in ipairs(Tabs) do
 				t.Active = false
 				t.Page.Visible = false
-				Tween(t.LandButton, {BackgroundColor3 = Theme().Surface2}, 0.15)
-				Tween(t.PortButton, {BackgroundColor3 = Theme().Surface2}, 0.15)
-				Tween(t.LandLabel, {TextColor3 = Theme().TextDim}, 0.15)
-				Tween(t.PortLabel, {TextColor3 = Theme().TextDim}, 0.15)
+				Tween(t.Button, {BackgroundColor3 = Theme().Surface2, BackgroundTransparency = Theme().Surface2Transparency}, 0.15)
+				Tween(t.Label, {TextColor3 = Theme().TextDim}, 0.15)
+				if t.Icon then
+					Tween(t.Icon, {TextColor3 = Theme().TextDim}, 0.15)
+				end
 			end
 			Data.Active = true
 			Page.Visible = true
-			Tween(LandButton, {BackgroundColor3 = Theme().Accent}, 0.15)
-			Tween(PortButton, {BackgroundColor3 = Theme().Accent}, 0.15)
-			Tween(LandLabel, {TextColor3 = Color3.new(1, 1, 1)}, 0.15)
-			Tween(PortLabel, {TextColor3 = Color3.new(1, 1, 1)}, 0.15)
+			Tween(TabButton, {BackgroundColor3 = Theme().Accent, BackgroundTransparency = 0.12}, 0.15)
+			Tween(TabLabel, {TextColor3 = Color3.new(1, 1, 1)}, 0.15)
+			if TabIcon then
+				Tween(TabIcon, {TextColor3 = Color3.new(1, 1, 1)}, 0.15)
+			end
+			TabScale.Scale = 0.94
+			Tween(TabScale, {Scale = 1}, 0.18, Enum.EasingStyle.Back)
+
+			-- page slide-in
+			local pageScale = Page:FindFirstChildOfClass("UIScale") or New("UIScale", {Parent = Page, Scale = 1})
+			pageScale.Scale = 0.985
+			Tween(pageScale, {Scale = 1}, 0.18)
+
 			State.ActiveTab = Data
 			SettingsOverlay.Visible = false
 			PageHolder.Visible = true
 			UpdateLayout()
+			task.defer(function()
+				pcall(SyncTabIndicator, true)
+			end)
 		end
 
-		LandButton.MouseButton1Click:Connect(Data.Activate)
-		PortButton.MouseButton1Click:Connect(Data.Activate)
+		TabButton.MouseButton1Click:Connect(Data.Activate)
 
 		AddRefresher(function()
-			LandButton.BackgroundColor3 = Data.Active and Theme().Accent or Theme().Surface2
-			PortButton.BackgroundColor3 = Data.Active and Theme().Accent or Theme().Surface2
-			LandButton.BackgroundTransparency = Theme().Surface2Transparency
-			PortButton.BackgroundTransparency = Theme().Surface2Transparency
-			LandLabel.TextColor3 = Data.Active and Color3.new(1, 1, 1) or Theme().TextDim
-			PortLabel.TextColor3 = Data.Active and Color3.new(1, 1, 1) or Theme().TextDim
-			Stroke(LandButton, Theme().Stroke, 1)
-			Stroke(PortButton, Theme().Stroke, 1)
+			TabButton.BackgroundColor3 = Data.Active and Theme().Accent or Theme().Surface2
+			TabButton.BackgroundTransparency = Data.Active and 0.12 or Theme().Surface2Transparency
+			TabLabel.TextColor3 = Data.Active and Color3.new(1, 1, 1) or Theme().TextDim
+			if TabIcon then
+				TabIcon.TextColor3 = Data.Active and Color3.new(1, 1, 1) or Theme().TextDim
+			end
+			Stroke(TabButton, Theme().Stroke, 1)
 		end)
 
 		function Tab:CreateSection(title)
@@ -3176,8 +3846,25 @@ function Library:CreateWindow(cfg)
 		MaxContext = 40,
 	}
 
-	local GeminiTab = Library:CreateTab("Gemini AI", {Internal = true, Raw = true})
+	local GeminiTab = Library:CreateTab("Gemini AI", {Internal = true, Raw = true, Icon = "AI"})
 	local GPage = Tabs[#Tabs].Page
+
+	-- forward declarations: only these four escape the chat block below
+	-- (keeps the window function comfortably under Luau's local limit)
+	local SendGeminiMessage
+	local ResetChat
+	local ThinkingRef
+
+	do
+	local AVATAR_URL = "rbxthumb://type=AvatarHeadShot&id=" .. tostring((Player and Player.UserId) or 1) .. "&w=150&h=150"
+
+	local QUICK_PROMPTS = {
+		"Explain this game's remote events",
+		"Write an ESP script with Drawing API",
+		"Optimise my RenderStepped loop",
+		"Make a smooth aimbot function",
+		"What does this Luau error mean?",
+	}
 
 	local ChatRoot = New("Frame", {
 		Parent = GPage,
@@ -3186,31 +3873,155 @@ function Library:CreateWindow(cfg)
 		Position = UDim2.fromOffset(2, 0),
 	})
 
-	-- toolbar
-	local Toolbar = New("Frame", {
+	------------------------------------------------------------------
+	-- HEADER: avatar · title · live status · mode pills
+	------------------------------------------------------------------
+
+	local ChatHeader = New("Frame", {
 		Parent = ChatRoot,
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 34),
+		Size = UDim2.new(1, 0, 0, 32),
+		ZIndex = 50,
 	})
 
-	New("UIListLayout", {Parent = Toolbar, Padding = UDim.new(0, 6), FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder})
+	local Avatar = New("ImageLabel", {
+		Parent = ChatHeader,
+		Position = UDim2.fromOffset(0, 2),
+		Size = UDim2.fromOffset(28, 28),
+		BackgroundColor3 = Theme().Surface2,
+		BackgroundTransparency = Theme().Surface2Transparency,
+		BorderSizePixel = 0,
+		Image = AVATAR_URL,
+		ZIndex = 51,
+	})
+	Corner(Avatar, 999)
+	Stroke(Avatar, Theme().Accent, 2)
+
+	local ChatTitle = New("TextLabel", {
+		Parent = ChatHeader,
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(36, 0),
+		Size = UDim2.new(1, -190, 0, 17),
+		Text = "GEMINI AI",
+		TextColor3 = Theme().Text,
+		TextSize = 13,
+		Font = Enum.Font.GothamBold,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		ZIndex = 51,
+	})
+
+	local StatusLabel = New("TextLabel", {
+		Parent = ChatHeader,
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(36, 16),
+		Size = UDim2.new(1, -190, 0, 14),
+		Text = "SYSTEM STANDBY",
+		TextColor3 = Theme().TextDim,
+		TextSize = 10,
+		Font = Enum.Font.GothamMedium,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		ZIndex = 51,
+	})
+
+	local ModeHolder = New("Frame", {
+		Parent = ChatHeader,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 2),
+		Size = UDim2.fromOffset(140, 28),
+		BackgroundTransparency = 1,
+		ZIndex = 51,
+	})
+	New("UIListLayout", {
+		Parent = ModeHolder,
+		Padding = UDim.new(0, 6),
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	})
+
+	local ModePills = {}
+	local SetGeminiMode
+
+	local function MakeModePill(modeName, label, order)
+		local pill = New("TextButton", {
+			Parent = ModeHolder,
+			Size = UDim2.fromOffset(64, 26),
+			BackgroundColor3 = Theme().Surface2,
+			BackgroundTransparency = Theme().Surface2Transparency,
+			BorderSizePixel = 0,
+			Text = label,
+			TextColor3 = Theme().TextDim,
+			TextSize = 11,
+			Font = Enum.Font.GothamBold,
+			AutoButtonColor = false,
+			LayoutOrder = order,
+			ZIndex = 52,
+		})
+		Corner(pill, 9)
+		Stroke(pill, Theme().Stroke, 1)
+		pill.MouseButton1Click:Connect(function()
+			SetGeminiMode(modeName, true)
+		end)
+		ModePills[modeName] = pill
+		return pill
+	end
+
+	MakeModePill("Chat", "CHAT", 1)
+	MakeModePill("Coder", "CODER", 2)
+
+	local function RefreshModePills()
+		for modeName, pill in pairs(ModePills) do
+			local active = (State.Gemini.Mode == modeName)
+			Tween(pill, {
+				BackgroundColor3 = active and Theme().Accent or Theme().Surface2,
+				BackgroundTransparency = active and 0.1 or Theme().Surface2Transparency,
+			}, 0.15)
+			Tween(pill, {TextColor3 = active and Color3.new(1, 1, 1) or Theme().TextDim}, 0.15)
+		end
+	end
+
+	------------------------------------------------------------------
+	-- TOOLBAR (scrollable so it never overflows on phones)
+	------------------------------------------------------------------
+
+	local Toolbar = New("ScrollingFrame", {
+		Parent = ChatRoot,
+		Position = UDim2.fromOffset(0, 36),
+		Size = UDim2.new(1, 0, 0, 30),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 0,
+		ScrollingDirection = Enum.ScrollingDirection.X,
+		AutomaticCanvasSize = Enum.AutomaticSize.X,
+		CanvasSize = UDim2.fromOffset(0, 0),
+		ZIndex = 50,
+	})
+	New("UIListLayout", {
+		Parent = Toolbar,
+		Padding = UDim.new(0, 6),
+		FillDirection = Enum.FillDirection.Horizontal,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	})
 
 	local function ToolButton(label, width, order)
 		local b = New("TextButton", {
 			Parent = Toolbar,
-			Size = UDim2.fromOffset(width, 34),
+			Size = UDim2.fromOffset(width, 30),
 			BackgroundColor3 = Theme().Surface2,
 			BackgroundTransparency = Theme().Surface2Transparency,
 			BorderSizePixel = 0,
 			Text = label,
 			TextColor3 = Theme().Text,
-			TextSize = 12,
+			TextSize = 11,
 			Font = Enum.Font.GothamMedium,
 			AutoButtonColor = false,
 			LayoutOrder = order,
 			ZIndex = 50,
 		})
-		Corner(b, 10)
+		Corner(b, 9)
 		Stroke(b, Theme().Stroke, 1)
 		b.MouseEnter:Connect(function()
 			Tween(b, {BackgroundColor3 = ColorLerp(Theme().Surface2, Theme().Accent, 0.18)}, 0.12)
@@ -3227,30 +4038,35 @@ function Library:CreateWindow(cfg)
 		return b
 	end
 
-	local NewChatBtn = ToolButton("+ New", 56, 1)
-	local ClearBtn   = ToolButton("Clear", 52, 2)
-	local RegenBtn   = ToolButton("Regen", 58, 3)
-	local ExportBtn  = ToolButton("Export", 60, 4)
+	local NewChatBtn = ToolButton("+ New", 54, 1)
+	local ClearBtn   = ToolButton("Clear", 50, 2)
+	local RegenBtn   = ToolButton("Regen", 54, 3)
+	local ExportBtn  = ToolButton("Export", 56, 4)
+	local SaveBtn    = ToolButton("Save", 48, 5)
+	local LoadBtn    = ToolButton("Load", 48, 6)
+	local HelpBtn    = ToolButton("/help", 48, 7)
 
 	local CounterLabel = New("TextLabel", {
-		Parent = ChatRoot,
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, 0, 0, 0),
-		Size = UDim2.fromOffset(86, 34),
+		Parent = Toolbar,
+		Size = UDim2.fromOffset(88, 30),
 		BackgroundTransparency = 1,
 		Text = "0 messages",
 		TextColor3 = Theme().TextDim,
-		TextSize = 11,
+		TextSize = 10,
 		Font = Enum.Font.Gotham,
 		TextXAlignment = Enum.TextXAlignment.Right,
+		LayoutOrder = 8,
 		ZIndex = 50,
 	})
 
-	-- chat scroll
+	------------------------------------------------------------------
+	-- CHAT SCROLL
+	------------------------------------------------------------------
+
 	local ChatScroll = New("ScrollingFrame", {
 		Parent = ChatRoot,
-		Position = UDim2.fromOffset(0, 42),
-		Size = UDim2.new(1, 0, 1, -102),
+		Position = UDim2.fromOffset(0, 70),
+		Size = UDim2.new(1, 0, 1, -120),
 		BackgroundColor3 = Theme().Surface,
 		BackgroundTransparency = Theme().SurfaceTransparency,
 		BorderSizePixel = 0,
@@ -3270,15 +4086,14 @@ function Library:CreateWindow(cfg)
 	})
 	New("UIPadding", {Parent = ChatScroll, PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)})
 
-	-- empty state (floats above the chat scroll, clicks fall through)
 	local EmptyState = New("TextLabel", {
 		Parent = ChatRoot,
-		Position = UDim2.fromOffset(0, 42),
-		Size = UDim2.new(1, 0, 1, -102),
+		Position = UDim2.fromOffset(0, 70),
+		Size = UDim2.new(1, 0, 1, -120),
 		BackgroundTransparency = 1,
-		Text = "✦\n\nChat with Gemini AI.\nPaste your API key in Settings → Gemini AI,\nthen type a message below.",
+		Text = "GEMINI AI\n\nPaste your API key in Settings -> Gemini AI,\npick CHAT or CODER, then say hello.\nType /help for slash commands.",
 		TextColor3 = Theme().TextDim,
-		TextSize = 13,
+		TextSize = 12,
 		Font = Enum.Font.GothamMedium,
 		TextWrapped = true,
 		TextYAlignment = Enum.TextYAlignment.Center,
@@ -3287,20 +4102,76 @@ function Library:CreateWindow(cfg)
 		ZIndex = 60,
 	})
 
-	-- input row
+	------------------------------------------------------------------
+	-- QUICK PROMPT CHIPS
+	------------------------------------------------------------------
+
+	local ChipsRow = New("ScrollingFrame", {
+		Parent = ChatRoot,
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 0, 1, -52),
+		Size = UDim2.new(1, 0, 0, 26),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 0,
+		ScrollingDirection = Enum.ScrollingDirection.X,
+		AutomaticCanvasSize = Enum.AutomaticSize.X,
+		CanvasSize = UDim2.fromOffset(0, 0),
+		ZIndex = 61,
+	})
+	New("UIListLayout", {
+		Parent = ChipsRow,
+		Padding = UDim.new(0, 6),
+		FillDirection = Enum.FillDirection.Horizontal,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	})
+
+	for i, prompt in ipairs(QUICK_PROMPTS) do
+		local chip = New("TextButton", {
+			Parent = ChipsRow,
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.new(0, 0, 1, 0),
+			BackgroundColor3 = Theme().Surface2,
+			BackgroundTransparency = 0.15,
+			BorderSizePixel = 0,
+			Text = prompt,
+			TextColor3 = Theme().TextDim,
+			TextSize = 10,
+			Font = Enum.Font.Gotham,
+			AutoButtonColor = false,
+			LayoutOrder = i,
+			ZIndex = 62,
+		})
+		Corner(chip, 999)
+		Stroke(chip, Theme().Stroke, 1)
+		New("UIPadding", {Parent = chip, PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12)})
+		chip.MouseButton1Click:Connect(function()
+			SendGeminiMessage(prompt)
+		end)
+		AddRefresher(function()
+			chip.BackgroundColor3 = Theme().Surface2
+			chip.TextColor3 = Theme().TextDim
+			Stroke(chip, Theme().Stroke, 1)
+		end)
+	end
+
+	------------------------------------------------------------------
+	-- INPUT ROW
+	------------------------------------------------------------------
+
 	local InputRow = New("Frame", {
 		Parent = ChatRoot,
 		AnchorPoint = Vector2.new(0, 1),
 		Position = UDim2.new(0, 0, 1, 0),
-		Size = UDim2.new(1, 0, 0, 52),
+		Size = UDim2.new(1, 0, 0, 46),
 		BackgroundTransparency = 1,
 		ZIndex = 50,
 	})
 
 	local InputHolder = New("Frame", {
 		Parent = InputRow,
-		Position = UDim2.fromOffset(0, 4),
-		Size = UDim2.new(1, -118, 0, 44),
+		Position = UDim2.fromOffset(0, 2),
+		Size = UDim2.new(1, -64, 0, 42),
 		BackgroundColor3 = Theme().Surface2,
 		BackgroundTransparency = Theme().Surface2Transparency,
 		BorderSizePixel = 0,
@@ -3316,7 +4187,7 @@ function Library:CreateWindow(cfg)
 		BackgroundTransparency = 1,
 		ClearTextOnFocus = false,
 		Text = "",
-		PlaceholderText = "Message Gemini...",
+		PlaceholderText = "Message Gemini...  (/help)",
 		TextColor3 = Theme().Text,
 		PlaceholderColor3 = Theme().TextDim,
 		TextSize = 13,
@@ -3329,8 +4200,8 @@ function Library:CreateWindow(cfg)
 	local SendBtn = New("TextButton", {
 		Parent = InputRow,
 		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, 0, 0, 4),
-		Size = UDim2.fromOffset(58, 44),
+		Position = UDim2.new(1, 0, 0, 2),
+		Size = UDim2.fromOffset(58, 42),
 		BackgroundColor3 = Theme().Accent,
 		BorderSizePixel = 0,
 		Text = "Send",
@@ -3345,8 +4216,8 @@ function Library:CreateWindow(cfg)
 	local StopBtn = New("TextButton", {
 		Parent = InputRow,
 		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -64, 0, 4),
-		Size = UDim2.fromOffset(50, 44),
+		Position = UDim2.new(1, -64, 0, 2),
+		Size = UDim2.fromOffset(50, 42),
 		BackgroundColor3 = Theme().Error,
 		BorderSizePixel = 0,
 		Text = "Stop",
@@ -3359,23 +4230,89 @@ function Library:CreateWindow(cfg)
 	})
 	Corner(StopBtn, 12)
 
-	-- input row adapts while a request is in flight
 	local function SetSendingUI(sending)
 		StopBtn.Visible = sending and true or false
 		SendBtn.Text = sending and "..." or "Send"
-		InputHolder.Size = UDim2.new(1, sending and -118 or -64, 0, 44)
+		InputHolder.Size = UDim2.new(1, sending and -118 or -64, 0, 42)
+	end
+
+	------------------------------------------------------------------
+	-- STATUS LINE
+	------------------------------------------------------------------
+
+	local StatusPulse = false
+
+	local function SetStatus(text, colorKey)
+		local T = Theme()
+		StatusLabel.Text = tostring(text)
+		if colorKey == "accent" then
+			StatusLabel.TextColor3 = T.Accent
+		elseif colorKey == "error" then
+			StatusLabel.TextColor3 = T.Error
+		elseif colorKey == "success" then
+			StatusLabel.TextColor3 = T.Success
+		else
+			StatusLabel.TextColor3 = T.TextDim
+		end
+	end
+
+	local function StartStatusPulse()
+		if StatusPulse then
+			return
+		end
+		StatusPulse = true
+		task.spawn(function()
+			while StatusPulse and not State.Destroyed do
+				Tween(StatusLabel, {TextTransparency = 0.55}, 0.45)
+				task.wait(0.5)
+				Tween(StatusLabel, {TextTransparency = 0}, 0.45)
+				task.wait(0.5)
+			end
+			StatusLabel.TextTransparency = 0
+		end)
+	end
+
+	local function StopStatusPulse()
+		StatusPulse = false
+		StatusLabel.TextTransparency = 0
+	end
+
+	SetGeminiMode = function(modeName, notifyIt)
+		if modeName ~= "Chat" and modeName ~= "Coder" then
+			modeName = "Chat"
+		end
+		State.Gemini.Mode = modeName
+		RefreshModePills()
+		SendBtn.Text = (modeName == "Coder") and "Build" or "Send"
+		ChatInput.PlaceholderText = (modeName == "Coder")
+			and "Describe the script you want...  (/help)"
+			or "Message Gemini...  (/help)"
+		if not Gemini.Sending then
+			SetStatus(modeName == "Coder" and "CODER MODE - AI WRITES LUAU" or "CHAT MODE - READY", "idle")
+		end
+		if GeminiRefs.Mode then
+			GeminiRefs.Mode.Set(modeName, true)
+		end
+		Persist()
+		if notifyIt then
+			Notify("Gemini AI", modeName .. " mode enabled.", 1.5, "Info")
+		end
+	end
+
+	GeminiHooks.SetMode = function(modeName)
+		SetGeminiMode(modeName, false)
 	end
 
 	------------------------------------------------------------------
 	-- GEMINI CHAT ENGINE
 	------------------------------------------------------------------
 
-	local ThinkingRef = nil -- {Frame, Label, Active}
+	ThinkingRef = nil
 
 	local function ScrollBottom()
 		task.defer(function()
 			if ChatScroll and ChatScroll.Parent then
-				ChatScroll.CanvasPosition = Vector2.new(0, ChatLayout.AbsoluteContentSize.Y + 100)
+				ChatScroll.CanvasPosition = Vector2.new(0, ChatLayout.AbsoluteContentSize.Y + 200)
 			end
 		end)
 	end
@@ -3383,13 +4320,147 @@ function Library:CreateWindow(cfg)
 	local function UpdateCounter()
 		local n = #Gemini.History
 		CounterLabel.Text = tostring(n) .. (n == 1 and " message" or " messages")
-		EmptyState.Visible = (n == 0 and not Gemini.Sending)
+		local empty = (n == 0 and not Gemini.Sending)
+		EmptyState.Visible = empty
+		ChipsRow.Visible = empty
 	end
 
-	local function AddBubble(kind, text, stamp)
+	--// Executes Luau produced by Gemini, with readable reporting
+	local function RunGeneratedCode(code)
+		if not LoadString then
+			Notify("Executor", "loadstring is not available here.", 2.4, "Warning")
+			return false
+		end
+		local clean = tostring(code or "")
+		local fn, compileErr = LoadString(clean)
+		if not fn then
+			Notify("Compile Error", Truncate(tostring(compileErr), 90), 3.5, "Error")
+			return false
+		end
+		local ok, runtimeErr = pcall(fn)
+		if ok then
+			Notify("Executed", "Script ran successfully.", 2, "Success")
+			return true
+		end
+		Notify("Runtime Error", Truncate(tostring(runtimeErr), 90), 3.5, "Error")
+		return false
+	end
+
+	local function MakeSmallButton(parent, label, order, width, cb)
+		local b = New("TextButton", {
+			Parent = parent,
+			Size = UDim2.fromOffset(width or 58, 20),
+			BackgroundColor3 = ColorLerp(Theme().Surface2, Color3.new(1, 1, 1), 0.08),
+			BackgroundTransparency = 0.2,
+			BorderSizePixel = 0,
+			Text = label,
+			TextColor3 = Theme().TextDim,
+			TextSize = 10,
+			Font = Enum.Font.GothamMedium,
+			AutoButtonColor = false,
+			LayoutOrder = order,
+			ZIndex = 56,
+		})
+		Corner(b, 6)
+		b.MouseButton1Click:Connect(cb)
+		return b
+	end
+
+	local LastCodeBlock = nil
+
+	local function AddCodeBlock(parent, code, order)
+		local T = Theme()
+		LastCodeBlock = code
+
+		local wrap = New("Frame", {
+			Parent = parent,
+			BackgroundColor3 = ColorLerp(T.Surface2, Color3.new(0, 0, 0), 0.45),
+			BackgroundTransparency = 0.1,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			LayoutOrder = order or 1,
+			ZIndex = 54,
+		})
+		Corner(wrap, 8)
+		Stroke(wrap, T.Stroke, 1)
+		New("UIListLayout", {Parent = wrap, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder})
+		New("UIPadding", {Parent = wrap, PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)})
+
+		local bar = New("Frame", {
+			Parent = wrap,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 20),
+			LayoutOrder = 1,
+			ZIndex = 55,
+		})
+		New("TextLabel", {
+			Parent = bar,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0.4, 0, 1, 0),
+			Text = "luau",
+			TextColor3 = T.Accent,
+			TextSize = 10,
+			Font = Enum.Font.GothamBold,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 56,
+		})
+
+		local btnRow = New("Frame", {
+			Parent = bar,
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, 0, 0, 0),
+			Size = UDim2.new(0, 130, 1, 0),
+			BackgroundTransparency = 1,
+			ZIndex = 56,
+		})
+		New("UIListLayout", {
+			Parent = btnRow,
+			Padding = UDim.new(0, 6),
+			FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Right,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		})
+
+		MakeSmallButton(btnRow, "Copy", 1, 46, function()
+			if SetClipboardText(code) then
+				Notify("Copied", "Code copied to clipboard.", 1.4, "Success")
+			else
+				Notify("Clipboard", "setclipboard is not supported here.", 2, "Warning")
+			end
+		end)
+		MakeSmallButton(btnRow, "Execute", 2, 62, function()
+			RunGeneratedCode(code)
+		end)
+
+		local body = New("TextLabel", {
+			Parent = wrap,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			RichText = true,
+			Text = " ",
+			TextColor3 = Color3.fromRGB(220, 230, 245),
+			TextSize = 12,
+			Font = Enum.Font.Code,
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			LayoutOrder = 2,
+			ZIndex = 55,
+		})
+		local okHl, highlighted = pcall(HighlightLua, code)
+		body.Text = (okHl and highlighted) or Esc(code)
+
+		return wrap
+	end
+
+	--// kind = "user" | "model" | "error" | "system"
+	local function AddBubble(kind, text, stamp, animate)
 		local T = Theme()
 		local isUser = (kind == "user")
 		local isError = (kind == "error")
+		local isSystem = (kind == "system")
 
 		local row = New("Frame", {
 			Parent = ChatScroll,
@@ -3399,14 +4470,37 @@ function Library:CreateWindow(cfg)
 			ZIndex = 52,
 		})
 
+		if isSystem then
+			local sys = New("TextLabel", {
+				Parent = row,
+				BackgroundColor3 = T.Surface2,
+				BackgroundTransparency = 0.45,
+				BorderSizePixel = 0,
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				RichText = true,
+				Text = " ",
+				TextColor3 = T.TextDim,
+				TextSize = 11,
+				Font = Enum.Font.GothamMedium,
+				TextWrapped = true,
+				ZIndex = 53,
+			})
+			Corner(sys, 8)
+			New("UIPadding", {Parent = sys, PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10)})
+			sys.Text = FormatChunk(text, 11)
+			ScrollBottom()
+			return row
+		end
+
 		local bubble = New("Frame", {
 			Parent = row,
 			AnchorPoint = Vector2.new(isUser and 1 or 0, 0),
 			Position = UDim2.new(isUser and 1 or 0, 0, 0, 0),
-			Size = UDim2.new(0.8, 0, 0, 0),
+			Size = UDim2.new(0.82, 0, 0, 0),
 			AutomaticSize = Enum.AutomaticSize.Y,
 			BackgroundColor3 = isUser and T.Accent or (isError and T.Error or T.Surface2),
-			BackgroundTransparency = isError and 0.25 or (isUser and 0 or T.Surface2Transparency),
+			BackgroundTransparency = isError and 0.25 or (isUser and 0.05 or T.Surface2Transparency),
 			BorderSizePixel = 0,
 			ZIndex = 53,
 		})
@@ -3419,7 +4513,7 @@ function Library:CreateWindow(cfg)
 
 		local whoText = isUser and "You" or (isError and "Error" or "Gemini")
 		if stamp then
-			whoText = whoText .. "  ·  " .. stamp
+			whoText = whoText .. "  -  " .. stamp
 		end
 		local meta = New("TextLabel", {
 			Parent = bubble,
@@ -3431,13 +4525,14 @@ function Library:CreateWindow(cfg)
 			TextSize = 10,
 			Font = Enum.Font.GothamBold,
 			TextXAlignment = Enum.TextXAlignment.Left,
+			LayoutOrder = 1,
 			ZIndex = 54,
 		})
 
 		local textColor = isUser and Color3.new(1, 1, 1) or (isError and Color3.fromRGB(255, 226, 226) or T.Text)
 
 		if isUser or isError then
-			New("TextLabel", {
+			local lbl = New("TextLabel", {
 				Parent = bubble,
 				BackgroundTransparency = 1,
 				Size = UDim2.new(1, 0, 0, 0),
@@ -3450,37 +4545,15 @@ function Library:CreateWindow(cfg)
 				TextWrapped = true,
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextYAlignment = Enum.TextYAlignment.Top,
+				LayoutOrder = 2,
 				ZIndex = 54,
-			}).Text = Esc(text)
+			})
+			lbl.Text = Esc(text)
 		else
-			-- model message: markdown-lite formatting + code blocks
+			local order = 2
 			for _, seg in ipairs(SplitCodeBlocks(text)) do
 				if seg.code then
-					local codeFrame = New("Frame", {
-						Parent = bubble,
-						BackgroundColor3 = ColorLerp(T.Surface2, Color3.new(0, 0, 0), 0.35),
-						BackgroundTransparency = 0.15,
-						BorderSizePixel = 0,
-						Size = UDim2.new(1, 0, 0, 0),
-						AutomaticSize = Enum.AutomaticSize.Y,
-						ZIndex = 54,
-					})
-					Corner(codeFrame, 8)
-					New("UIPadding", {Parent = codeFrame, PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)})
-					New("TextLabel", {
-						Parent = codeFrame,
-						BackgroundTransparency = 1,
-						Size = UDim2.new(1, 0, 0, 0),
-						AutomaticSize = Enum.AutomaticSize.Y,
-						Text = seg.text,
-						TextColor3 = Color3.fromRGB(220, 230, 245),
-						TextSize = 12,
-						Font = Enum.Font.Code,
-						TextWrapped = true,
-						TextXAlignment = Enum.TextXAlignment.Left,
-						TextYAlignment = Enum.TextYAlignment.Top,
-						ZIndex = 55,
-					})
+					AddCodeBlock(bubble, seg.text, order)
 				else
 					local lbl = New("TextLabel", {
 						Parent = bubble,
@@ -3495,37 +4568,67 @@ function Library:CreateWindow(cfg)
 						TextWrapped = true,
 						TextXAlignment = Enum.TextXAlignment.Left,
 						TextYAlignment = Enum.TextYAlignment.Top,
+						LayoutOrder = order,
 						ZIndex = 54,
 					})
-					lbl.Text = FormatChunk(seg.text, 13)
+
+					local plain = tostring(seg.text or "")
+					if animate and State.Gemini.Typewriter and #plain > 0 and #plain <= 1400 then
+						-- typewriter reveal (plain text first, formatted at the end)
+						local myGen = Gemini.Generation
+						lbl.RichText = false
+						lbl.Text = ""
+						task.spawn(function()
+							local i = 0
+							local step = math.max(2, math.floor(#plain / 90))
+							while i < #plain do
+								if State.Destroyed or myGen ~= Gemini.Generation or not lbl.Parent then
+									break
+								end
+								i = math.min(#plain, i + step)
+								lbl.Text = plain:sub(1, i)
+								ScrollBottom()
+								task.wait(0.016)
+							end
+							if lbl and lbl.Parent then
+								lbl.RichText = true
+								lbl.Text = FormatChunk(plain, 13)
+							end
+						end)
+					else
+						lbl.Text = FormatChunk(plain, 13)
+					end
 				end
+				order = order + 1
 			end
 
-			-- per-message copy button
-			local copyBtn = New("TextButton", {
+			local actions = New("Frame", {
 				Parent = bubble,
-				BackgroundColor3 = ColorLerp(T.Surface2, Color3.new(1, 1, 1), 0.06),
-				BackgroundTransparency = 0.2,
-				BorderSizePixel = 0,
-				Size = UDim2.new(0, 74, 0, 22),
-				Text = "Copy",
-				TextColor3 = T.TextDim,
-				TextSize = 11,
-				Font = Enum.Font.GothamMedium,
-				AutoButtonColor = false,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, 20),
+				LayoutOrder = order + 1,
 				ZIndex = 54,
 			})
-			Corner(copyBtn, 7)
-			copyBtn.MouseButton1Click:Connect(function()
+			New("UIListLayout", {
+				Parent = actions,
+				Padding = UDim.new(0, 6),
+				FillDirection = Enum.FillDirection.Horizontal,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			})
+			MakeSmallButton(actions, "Copy", 1, 50, function()
 				if SetClipboardText(text) then
 					Notify("Copied", "Response copied to clipboard.", 1.4, "Success")
 				else
 					Notify("Clipboard", "setclipboard is not supported here.", 2, "Warning")
 				end
 			end)
+			MakeSmallButton(actions, "Speak Again", 2, 78, function()
+				if GeminiHooks.Regenerate then
+					GeminiHooks.Regenerate()
+				end
+			end)
 		end
 
-		-- entry pop
 		local bs = New("UIScale", {Parent = bubble, Scale = 0.94})
 		Tween(bs, {Scale = 1}, 0.18)
 
@@ -3535,7 +4638,7 @@ function Library:CreateWindow(cfg)
 			end
 			local T2 = Theme()
 			bubble.BackgroundColor3 = isUser and T2.Accent or (isError and T2.Error or T2.Surface2)
-			bubble.BackgroundTransparency = isError and 0.25 or (isUser and 0 or T2.Surface2Transparency)
+			bubble.BackgroundTransparency = isError and 0.25 or (isUser and 0.05 or T2.Surface2Transparency)
 			if not isUser then
 				Stroke(bubble, isError and T2.Error or T2.Stroke, 1)
 			end
@@ -3602,6 +4705,37 @@ function Library:CreateWindow(cfg)
 		end
 	end
 
+	------------------------------------------------------------------
+	-- CHAT PERSISTENCE
+	------------------------------------------------------------------
+
+	local ChatFile = (SaveFile:match("^(.*)/[^/]+$") or "KilometresUIX") .. "/gemini_history.json"
+
+	local function SaveChatHistory(silent)
+		if not State.Gemini.SaveChat then
+			return
+		end
+		local payload = {saved = os.time(), messages = {}}
+		local startIdx = math.max(1, #Gemini.History - 60 + 1)
+		for i = startIdx, #Gemini.History do
+			local m = Gemini.History[i]
+			table.insert(payload.messages, {role = m.role, content = m.content})
+		end
+		local json = SafeJSONEncode(payload)
+		if json then
+			TryWriteFile(ChatFile, json)
+			if not silent then
+				Notify("Gemini AI", "Chat saved.", 1.5, "Success")
+			end
+		end
+	end
+
+	local LoadChatHistory
+
+	------------------------------------------------------------------
+	-- REQUEST BUILDERS
+	------------------------------------------------------------------
+
 	local function BuildGeminiURL()
 		local g = State.Gemini
 		local url = tostring(g.Endpoint or DEFAULT_GEMINI_ENDPOINT)
@@ -3611,6 +4745,26 @@ function Library:CreateWindow(cfg)
 			url = url .. (url:find("?", 1, true) and "&" or "?") .. "key=" .. g.ApiKey
 		end
 		return url
+	end
+
+	local function BuildSystemPrompt()
+		local g = State.Gemini
+		local base
+		if g.Mode == "Coder" then
+			base = "You are an elite Roblox Luau engineer. Reply with production-ready, "
+				.. "optimised Luau wrapped in ```lua code fences. Keep prose to at most two short "
+				.. "sentences before the code. Never use deprecated APIs, never use infinite "
+				.. "while-true loops without task.wait, and always pcall risky calls."
+		else
+			base = "You are Gemini inside the Kilometres UI X Roblox script hub. Be concise, "
+				.. "friendly and technically accurate. Use short paragraphs and bullet points. "
+				.. "Format any code with ```lua fences."
+		end
+		local extra = Trim(g.SystemPrompt)
+		if extra ~= "" then
+			base = base .. "\n\nUser instructions: " .. extra
+		end
+		return base
 	end
 
 	local function BuildGeminiBody()
@@ -3630,10 +4784,8 @@ function Library:CreateWindow(cfg)
 				temperature = g.Temperature,
 				maxOutputTokens = g.MaxTokens,
 			},
+			systemInstruction = {parts = {{text = BuildSystemPrompt()}}},
 		}
-		if Trim(g.SystemPrompt) ~= "" then
-			body.systemInstruction = {parts = {{text = g.SystemPrompt}}}
-		end
 		return SafeJSONEncode(body)
 	end
 
@@ -3646,7 +4798,7 @@ function Library:CreateWindow(cfg)
 		if lower:find("api key") or lower:find("api_key") or status == 401 or status == 403 then
 			return "Gemini Error: Invalid API key."
 		elseif status == 400 then
-			return "Gemini Error: Bad request — check the model and endpoint. " .. Truncate(apiMsg, 90)
+			return "Gemini Error: Bad request - check the model and endpoint. " .. Truncate(apiMsg, 90)
 		elseif status == 404 then
 			return "Gemini Error: Model or endpoint not found."
 		elseif status == 429 then
@@ -3664,49 +4816,159 @@ function Library:CreateWindow(cfg)
 
 	local function GeminiFail(msg)
 		AddBubble("error", msg, os.date("%H:%M"))
-		Notify("Gemini", msg:gsub("^Gemini Error: ", ""), 3, "Error")
+		SetStatus("REQUEST FAILED", "error")
+		Notify("Gemini", (msg:gsub("^Gemini Error: ", "")), 3, "Error")
 		UpdateCounter()
 	end
 
-	local function SendGeminiMessage(text)
-		text = Trim(text)
-		if text == "" then
-			return
+	------------------------------------------------------------------
+	-- SLASH COMMANDS
+	------------------------------------------------------------------
+
+	local HELP_TEXT = table.concat({
+		"**Slash commands**",
+		"- `/help` show this list",
+		"- `/clear` or `/new` start a fresh chat",
+		"- `/mode chat` or `/mode coder` switch AI behaviour",
+		"- `/model <name>` set the Gemini model",
+		"- `/temp <0-2>` set creativity",
+		"- `/theme <name>` change UI theme",
+		"- `/wallpaper <1-20 | random | off | on>` change UIBG",
+		"- `/run` execute the last code block Gemini sent",
+		"- `/copy` copy the last reply",
+		"- `/save` or `/load` chat history",
+	}, "\n")
+
+	local function HandleSlashCommand(text)
+		local cmd, rest = text:match("^/(%a+)%s*(.*)$")
+		if not cmd then
+			return false
 		end
-		if Gemini.Sending then
-			Notify("Gemini", "Please wait — a response is generating.", 2, "Warning")
-			return
-		end
-		if State.Gemini.ApiKey == "" then
-			AddBubble("error", "Gemini Error: Missing API key. Open Settings → Gemini AI and paste your key.")
-			Notify("Gemini Error", "Missing API key.", 3, "Error")
-			return
+		cmd = cmd:lower()
+		rest = Trim(rest or "")
+
+		if cmd == "help" then
+			AddBubble("system", HELP_TEXT)
+		elseif cmd == "clear" or cmd == "new" then
+			ResetChat("New chat started.")
+		elseif cmd == "mode" then
+			local m = rest:lower()
+			SetGeminiMode((m == "coder" or m == "code") and "Coder" or "Chat", true)
+			AddBubble("system", "Mode set to **" .. State.Gemini.Mode .. "**.")
+		elseif cmd == "model" then
+			if rest ~= "" then
+				State.Gemini.Model = rest
+				if GeminiRefs.Model then GeminiRefs.Model.Set(rest) end
+				Persist()
+				AddBubble("system", "Model set to `" .. rest .. "`.")
+			else
+				AddBubble("system", "Current model: `" .. State.Gemini.Model .. "`")
+			end
+		elseif cmd == "temp" then
+			local v = tonumber(rest)
+			if v then
+				State.Gemini.Temperature = Clamp(v, 0, 2)
+				if GeminiRefs.Temperature then GeminiRefs.Temperature.Set(State.Gemini.Temperature, true) end
+				Persist()
+				AddBubble("system", "Temperature set to **" .. tostring(State.Gemini.Temperature) .. "**.")
+			else
+				AddBubble("system", "Usage: `/temp 0.7`")
+			end
+		elseif cmd == "theme" then
+			local found = nil
+			for _, info in ipairs(ThemeList) do
+				if info.Key:lower() == rest:lower() or info.Label:lower() == rest:lower() then
+					found = info
+					break
+				end
+			end
+			if found then
+				SetTheme(found.Key)
+				AddBubble("system", "Theme changed to **" .. found.Label .. "**.")
+			else
+				local names = {}
+				for _, info in ipairs(ThemeList) do
+					table.insert(names, "`" .. info.Key .. "`")
+				end
+				AddBubble("system", "Unknown theme. Available: " .. table.concat(names, ", "))
+			end
+		elseif cmd == "wallpaper" or cmd == "uibg" or cmd == "uibd" then
+			local low = rest:lower()
+			if low == "off" then
+				State.UIBG.Enabled = false
+				if UIBGRefs.Toggle then UIBGRefs.Toggle.Set(false, true) end
+				ApplyWallpaper(true)
+				Persist()
+				AddBubble("system", "UIBG wallpaper **off**.")
+			elseif low == "on" then
+				State.UIBG.Enabled = true
+				if UIBGRefs.Toggle then UIBGRefs.Toggle.Set(true, true) end
+				ApplyWallpaper()
+				Persist()
+				AddBubble("system", "UIBG wallpaper **on**.")
+			elseif low == "random" or low == "shuffle" then
+				local i = ShuffleWallpaper(true)
+				AddBubble("system", "Wallpaper: **" .. (WALLPAPERS[i] and WALLPAPERS[i].Name or "?") .. "**")
+			else
+				local n = tonumber(rest)
+				if n and WALLPAPERS[math.floor(n)] then
+					n = math.floor(n)
+					State.UIBG.Index = n
+					State.UIBG.CustomId = ""
+					State.UIBG.Enabled = true
+					if UIBGRefs.Toggle then UIBGRefs.Toggle.Set(true, true) end
+					if UIBGRefs.Refresh then UIBGRefs.Refresh() end
+					ApplyWallpaper()
+					Persist()
+					AddBubble("system", "Wallpaper: **" .. WALLPAPERS[n].Name .. "** (" .. n .. "/" .. #WALLPAPERS .. ")")
+				else
+					AddBubble("system", "Usage: `/wallpaper 7`, `/wallpaper random`, `/wallpaper off`")
+				end
+			end
+		elseif cmd == "run" or cmd == "exec" then
+			if LastCodeBlock then
+				RunGeneratedCode(LastCodeBlock)
+				AddBubble("system", "Executed the last code block.")
+			else
+				AddBubble("system", "No code block to run yet.")
+			end
+		elseif cmd == "copy" then
+			local last = nil
+			for i = #Gemini.History, 1, -1 do
+				if Gemini.History[i].role == "model" then
+					last = Gemini.History[i].content
+					break
+				end
+			end
+			if last and SetClipboardText(last) then
+				AddBubble("system", "Last reply copied to clipboard.")
+			else
+				AddBubble("system", "Nothing to copy (or clipboard unsupported).")
+			end
+		elseif cmd == "save" then
+			SaveChatHistory(false)
+			AddBubble("system", "Chat saved to `" .. ChatFile .. "`.")
+		elseif cmd == "load" then
+			if LoadChatHistory and LoadChatHistory(true) then
+				AddBubble("system", "Chat history restored.")
+			else
+				AddBubble("system", "No saved chat found.")
+			end
+		else
+			return false
 		end
 
 		ChatInput.Text = ""
-		table.insert(Gemini.History, {role = "user", content = text, ts = os.time()})
-		AddBubble("user", text, os.date("%H:%M"))
-		TrimHistory()
-		UpdateCounter()
+		ScrollBottom()
+		return true
+	end
 
-		Gemini.Sending = true
-		Gemini.Generation = Gemini.Generation + 1
-		local myGen = Gemini.Generation
-		SetThinking(true)
-		SetSendingUI(true)
+	------------------------------------------------------------------
+	-- SEND
+	------------------------------------------------------------------
 
-		-- soft timeout guard (2 minutes)
-		task.delay(120, function()
-			if Gemini.Sending and myGen == Gemini.Generation and not State.Destroyed then
-				Gemini.Generation = Gemini.Generation + 1
-				Gemini.Sending = false
-				SetThinking(false)
-				SetSendingUI(false)
-				UpdateCounter()
-				GeminiFail("Gemini Error: Request timed out.")
-			end
-		end)
-
+	local function DispatchGemini(myGen, attempt)
+		local started = os.clock()
 		task.spawn(function()
 			local ok, res = pcall(function()
 				local body = BuildGeminiBody()
@@ -3716,16 +4978,24 @@ function Library:CreateWindow(cfg)
 				return HttpPost(BuildGeminiURL(), body)
 			end)
 
-			if State.Destroyed then
+			if State.Destroyed or myGen ~= Gemini.Generation then
 				return
 			end
-			if myGen ~= Gemini.Generation then
-				return -- stopped / superseded
+
+			-- one silent retry for flaky executor HTTP
+			if (not ok) and State.Gemini.AutoRetry and attempt < 2 then
+				SetStatus("NETWORK HICCUP - RETRYING...", "accent")
+				task.wait(1.5)
+				if myGen == Gemini.Generation and not State.Destroyed then
+					DispatchGemini(myGen, attempt + 1)
+				end
+				return
 			end
 
 			Gemini.Sending = false
 			SetThinking(false)
 			SetSendingUI(false)
+			StopStatusPulse()
 
 			if not ok then
 				if RawRequest == nil then
@@ -3784,28 +5054,116 @@ function Library:CreateWindow(cfg)
 			end
 
 			table.insert(Gemini.History, {role = "model", content = outText, ts = os.time()})
-			AddBubble("model", outText, os.date("%H:%M"))
+			AddBubble("model", outText, os.date("%H:%M"), true)
 			TrimHistory()
 			UpdateCounter()
+			SaveChatHistory(true)
+
+			local secs = math.floor((os.clock() - started) * 10 + 0.5) / 10
+			SetStatus(string.format("REPLY IN %.1fs  -  %d chars", secs, #outText), "success")
+			task.delay(4, function()
+				if not Gemini.Sending and not State.Destroyed then
+					SetStatus(State.Gemini.Mode == "Coder" and "CODER MODE - AI WRITES LUAU" or "CHAT MODE - READY", "idle")
+				end
+			end)
+
+			-- Coder mode convenience: auto-copy the first code block
+			if State.Gemini.Mode == "Coder" and LastCodeBlock and SetClip then
+				pcall(SetClipboardText, LastCodeBlock)
+			end
 		end)
 	end
 
-	local function ResetChat(notifyText)
+	SendGeminiMessage = function(text)
+		text = Trim(text)
+		if text == "" then
+			return
+		end
+		if text:sub(1, 1) == "/" and HandleSlashCommand(text) then
+			return
+		end
+		if Gemini.Sending then
+			Notify("Gemini", "Please wait - a response is generating.", 2, "Warning")
+			return
+		end
+		if State.Gemini.ApiKey == "" then
+			AddBubble("error", "Gemini Error: Missing API key. Open Settings -> Gemini AI and paste your key.")
+			Notify("Gemini Error", "Missing API key.", 3, "Error")
+			return
+		end
+
+		ChatInput.Text = ""
+		table.insert(Gemini.History, {role = "user", content = text, ts = os.time()})
+		AddBubble("user", text, os.date("%H:%M"))
+		TrimHistory()
+		UpdateCounter()
+
+		Gemini.Sending = true
+		Gemini.Generation = Gemini.Generation + 1
+		local myGen = Gemini.Generation
+		SetThinking(true)
+		SetSendingUI(true)
+		SetStatus("GEMINI IS THINKING...", "accent")
+		StartStatusPulse()
+
+		task.delay(120, function()
+			if Gemini.Sending and myGen == Gemini.Generation and not State.Destroyed then
+				Gemini.Generation = Gemini.Generation + 1
+				Gemini.Sending = false
+				SetThinking(false)
+				SetSendingUI(false)
+				StopStatusPulse()
+				UpdateCounter()
+				GeminiFail("Gemini Error: Request timed out.")
+			end
+		end)
+
+		DispatchGemini(myGen, 1)
+	end
+
+	ResetChat = function(notifyText)
 		Gemini.Generation = Gemini.Generation + 1
 		Gemini.Sending = false
 		SetThinking(false)
 		SetSendingUI(false)
+		StopStatusPulse()
 		Gemini.History = {}
+		LastCodeBlock = nil
 		for _, child in ipairs(ChatScroll:GetChildren()) do
 			if child:IsA("Frame") then
 				child:Destroy()
 			end
 		end
 		UpdateCounter()
+		SetStatus(State.Gemini.Mode == "Coder" and "CODER MODE - AI WRITES LUAU" or "CHAT MODE - READY", "idle")
 		if notifyText then
 			Notify("Gemini AI", notifyText, 2, "Info")
 		end
 		ScrollBottom()
+	end
+
+	LoadChatHistory = function(notifyIt)
+		local raw = TryReadFile(ChatFile)
+		local data = raw and SafeJSONDecode(raw)
+		if not data or type(data.messages) ~= "table" or #data.messages == 0 then
+			if notifyIt then
+				Notify("Gemini AI", "No saved chat found.", 2, "Warning")
+			end
+			return false
+		end
+		ResetChat(nil)
+		for _, m in ipairs(data.messages) do
+			if type(m) == "table" and type(m.content) == "string" then
+				local role = (m.role == "model") and "model" or "user"
+				table.insert(Gemini.History, {role = role, content = m.content, ts = os.time()})
+				AddBubble(role, m.content, nil, false)
+			end
+		end
+		UpdateCounter()
+		if notifyIt then
+			Notify("Gemini AI", #Gemini.History .. " messages restored.", 2, "Success")
+		end
+		return true
 	end
 
 	local function Regenerate()
@@ -3813,7 +5171,6 @@ function Library:CreateWindow(cfg)
 			Notify("Gemini", "Stop the current generation first.", 2, "Warning")
 			return
 		end
-		-- drop trailing model message(s), resend the last user message
 		while #Gemini.History > 0 and Gemini.History[#Gemini.History].role == "model" do
 			table.remove(Gemini.History)
 		end
@@ -3826,7 +5183,6 @@ function Library:CreateWindow(cfg)
 			Notify("Gemini", "Nothing to regenerate yet.", 2, "Warning")
 			return
 		end
-		-- snapshot remaining history BEFORE wiping visuals
 		local historyCopy = {}
 		for _, m in ipairs(Gemini.History) do
 			table.insert(historyCopy, m)
@@ -3834,11 +5190,13 @@ function Library:CreateWindow(cfg)
 		ResetChat(nil)
 		Gemini.History = historyCopy
 		for _, m in ipairs(historyCopy) do
-			AddBubble(m.role == "model" and "model" or "user", m.content, os.date("%H:%M"))
+			AddBubble(m.role == "model" and "model" or "user", m.content, os.date("%H:%M"), false)
 		end
 		UpdateCounter()
 		SendGeminiMessage(lastUser)
 	end
+
+	GeminiHooks.Regenerate = Regenerate
 
 	local function ExportChat()
 		if #Gemini.History == 0 then
@@ -3849,6 +5207,7 @@ function Library:CreateWindow(cfg)
 			app = "Kilometres UI X " .. Library.Version,
 			exported = os.date("%Y-%m-%d %H:%M:%S"),
 			model = State.Gemini.Model,
+			mode = State.Gemini.Mode,
 			messages = {},
 		}
 		for _, m in ipairs(Gemini.History) do
@@ -3876,6 +5235,22 @@ function Library:CreateWindow(cfg)
 	end)
 	RegenBtn.MouseButton1Click:Connect(Regenerate)
 	ExportBtn.MouseButton1Click:Connect(ExportChat)
+	SaveBtn.MouseButton1Click:Connect(function()
+		if #Gemini.History == 0 then
+			Notify("Gemini AI", "Nothing to save yet.", 2, "Warning")
+			return
+		end
+		local prev = State.Gemini.SaveChat
+		State.Gemini.SaveChat = true
+		SaveChatHistory(false)
+		State.Gemini.SaveChat = prev
+	end)
+	LoadBtn.MouseButton1Click:Connect(function()
+		LoadChatHistory(true)
+	end)
+	HelpBtn.MouseButton1Click:Connect(function()
+		AddBubble("system", HELP_TEXT)
+	end)
 
 	StopBtn.MouseButton1Click:Connect(function()
 		if Gemini.Sending then
@@ -3883,7 +5258,9 @@ function Library:CreateWindow(cfg)
 			Gemini.Sending = false
 			SetThinking(false)
 			SetSendingUI(false)
+			StopStatusPulse()
 			UpdateCounter()
+			SetStatus("GENERATION STOPPED", "error")
 			Notify("Gemini", "Generation stopped.", 1.8, "Info")
 		end
 	end)
@@ -3897,9 +5274,9 @@ function Library:CreateWindow(cfg)
 		end
 	end)
 
-	-- chat theming
 	AddRefresher(function()
 		local T = Theme()
+		ChatTitle.TextColor3 = T.Text
 		CounterLabel.TextColor3 = T.TextDim
 		EmptyState.TextColor3 = T.TextDim
 		ChatScroll.BackgroundColor3 = T.Surface
@@ -3910,11 +5287,23 @@ function Library:CreateWindow(cfg)
 		ChatInput.PlaceholderColor3 = T.TextDim
 		SendBtn.BackgroundColor3 = T.Accent
 		StopBtn.BackgroundColor3 = T.Error
+		Avatar.BackgroundColor3 = T.Surface2
+		Stroke(Avatar, T.Accent, 2)
 		Stroke(ChatScroll, T.Stroke, 1)
 		Stroke(InputHolder, T.Stroke, 1)
+		RefreshModePills()
 	end)
 
+	SetGeminiMode(State.Gemini.Mode, false)
 	UpdateCounter()
+
+	-- restore the previous conversation on launch
+	task.defer(function()
+		if State.Gemini.SaveChat and not State.Destroyed then
+			pcall(LoadChatHistory, false)
+		end
+	end)
+	end -- chat block
 
 	------------------------------------------------------------------
 	-- CLEANUP
@@ -3957,12 +5346,13 @@ function Library:CreateWindow(cfg)
 			b.TextColor3 = T.Text
 			Stroke(b, T.Stroke, 1)
 		end
-		LandscapeNav.BackgroundColor3 = T.Surface
-		LandscapeNav.BackgroundTransparency = T.SurfaceTransparency
-		PortraitNav.BackgroundColor3 = T.Surface
-		PortraitNav.BackgroundTransparency = T.SurfaceTransparency
-		Stroke(LandscapeNav, T.Stroke, 1)
-		Stroke(PortraitNav, T.Stroke, 1)
+		TabBar.BackgroundColor3 = T.Surface
+		TabBar.BackgroundTransparency = T.SurfaceTransparency
+		TabIndicator.BackgroundColor3 = T.Accent
+		Stroke(TabBar, T.Stroke, 1)
+		if UIBGWash then
+			UIBGWash.BackgroundColor3 = T.Accent
+		end
 		SettingsPanel.BackgroundColor3 = T.Surface
 		SettingsPanel.BackgroundTransparency = T.SurfaceTransparency
 		Stroke(SettingsPanel, T.Stroke, 1)
@@ -3974,6 +5364,14 @@ function Library:CreateWindow(cfg)
 	------------------------------------------------------------------
 	-- STARTUP
 	------------------------------------------------------------------
+
+	if State.UIBG.Shuffle and Trim(State.UIBG.CustomId) == "" then
+		State.UIBG.Index = math.random(1, #WALLPAPERS)
+		if UIBGRefs.Refresh then
+			UIBGRefs.Refresh()
+		end
+	end
+	ApplyWallpaper(true)
 
 	UpdateLayout()
 	RefreshAll()
@@ -4082,6 +5480,67 @@ function Library:CreateWindow(cfg)
 		ApplyLoadedState()
 		Persist()
 		Notify("Settings", "Settings reset.", 1.8, "Success")
+	end
+
+	------------------------------------------------------------------
+	-- WALLPAPER (UIBG) API
+	------------------------------------------------------------------
+
+	function API:SetWallpaper(value)
+		if type(value) == "number" then
+			State.UIBG.Index = Clamp(math.floor(value), 1, #WALLPAPERS)
+			State.UIBG.CustomId = ""
+		elseif type(value) == "string" then
+			State.UIBG.CustomId = Trim(value)
+		end
+		State.UIBG.Enabled = true
+		if UIBGRefs.Toggle then
+			UIBGRefs.Toggle.Set(true, true)
+			UIBGRefs.CustomId.Set(State.UIBG.CustomId)
+			UIBGRefs.Refresh()
+		end
+		ApplyWallpaper()
+		Persist()
+	end
+
+	function API:ToggleWallpaper(flag)
+		if flag == nil then
+			flag = not State.UIBG.Enabled
+		end
+		State.UIBG.Enabled = flag and true or false
+		if UIBGRefs.Toggle then
+			UIBGRefs.Toggle.Set(State.UIBG.Enabled, true)
+		end
+		ApplyWallpaper(true)
+		Persist()
+		return State.UIBG.Enabled
+	end
+
+	function API:NextWallpaper()
+		local i = State.UIBG.Index + 1
+		if i > #WALLPAPERS then i = 1 end
+		return self:SetWallpaper(i)
+	end
+
+	function API:ShuffleWallpaper()
+		return ShuffleWallpaper(true)
+	end
+
+	function API:GetWallpapers()
+		local out = {}
+		for i, wp in ipairs(WALLPAPERS) do
+			table.insert(out, {Index = i, Name = wp.Name, Id = wp.Id})
+		end
+		return out
+	end
+
+	function API:SetWallpaperOpacity(v)
+		State.UIBG.Opacity = Clamp(tonumber(v) or State.UIBG.Opacity, 0, 1)
+		if UIBGRefs.Opacity then
+			UIBGRefs.Opacity.Set(State.UIBG.Opacity, true)
+		end
+		ApplyWallpaper(true)
+		Persist()
 	end
 
 	function API:ConfigureGemini(opts)
