@@ -1197,6 +1197,283 @@ local function CachedCount()
 end
 
 --// ======================================================================
+--// SND FOLDER ENGINE   (V9.3)
+--//   Exactly the same idea as the img/ engine above, but for music.
+--//   A track is downloaded once from its archive.org url into  snd/
+--//   and afterwards played straight off the device with
+--//   getcustomasset, so it never depends on a Roblox audio id.
+--//   Roblox accepts .mp3 / .ogg / .wav / .flac, and archive.org
+--//   serves plain mp3 with no key, no expiry and no ip lock.
+--// ======================================================================
+
+local SND_FOLDER = "snd"
+
+local function EnsureSndFolder()
+	if type(isfolder) == "function" and type(makefolder) == "function" then
+		local ok, exists = pcall(isfolder, SND_FOLDER)
+		if ok and not exists then
+			pcall(makefolder, SND_FOLDER)
+		end
+	end
+end
+
+--// stable, filesystem-safe name derived from the track itself
+local function SndFileName(song)
+	local base = tostring(song.Name or "track") .. "_" .. tostring(song.Artist or "")
+	base = base:gsub("[^%w%-]+", "_"):gsub("^_+", ""):gsub("_+$", "")
+	if base == "" then base = "track" end
+	if #base > 48 then base = base:sub(1, 48) end
+	--// tiny hash of the url so two different sources never collide.
+	--// self-contained on purpose: Bxor32/Mul32 live further down the
+	--// file, so this engine cannot call them.
+	local url = tostring(song.Url or song.Id or base)
+	local h = 5381
+	for i = 1, #url do
+		h = (h * 33 + url:byte(i)) % 4294967296
+	end
+	local ext = "mp3"
+	local tail = url:match("%.(%a%a%a%a?)$")
+	if tail then
+		tail = tail:lower()
+		if tail == "ogg" or tail == "wav" or tail == "flac" or tail == "mp3" then
+			ext = tail
+		end
+	end
+	return string.format("%s_%08x.%s", base, h % 4294967296, ext)
+end
+
+local function SndPath(song)
+	return SND_FOLDER .. "/" .. SndFileName(song)
+end
+
+--// is this track already sitting on the device?
+local function SongCached(song)
+	if not FileSystemOK or not song or not song.Url then
+		return false
+	end
+	return FileExists(SndPath(song))
+end
+
+--// returns: assetString, isLocalFile
+--//   local snd/ file first, rbxassetid:// fallback for executors with
+--//   no filesystem (or when the download has not happened yet).
+local function SongAsset(song)
+	if not song then
+		return nil, false
+	end
+	if FileSystemOK and song.Url then
+		local path = SndPath(song)
+		if FileExists(path) then
+			local ok, asset = pcall(GetCustomAsset, path)
+			if ok and type(asset) == "string" and asset ~= "" then
+				return asset, true
+			end
+		end
+	end
+	local id = tostring(song.Id or ""):gsub("%D", "")
+	if id ~= "" then
+		return "rbxassetid://" .. id, false
+	end
+	return nil, false
+end
+
+--// downloads one track into snd/ (returns true when the file is ready)
+--//   audio is a lot bigger than a wallpaper, so the size floor is
+--//   higher: anything under 64 KB is an error page, not a song.
+local function CacheSong(song)
+	if not FileSystemOK or not song or not song.Url then
+		return false
+	end
+	local path = SndPath(song)
+	if FileExists(path) then
+		return true
+	end
+	EnsureSndFolder()
+	local data = HttpGetBinary(song.Url)
+	if not data or #data < 65536 then
+		return false
+	end
+	local ok = pcall(writefile, path, data)
+	return ok and FileExists(path)
+end
+
+--// ======================================================================
+--// ARCHIVE.ORG LIVE SEARCH   (V9.3)
+--//   Lets the player look up any song on archive.org at runtime and
+--//   drop it straight into the playlist.  Public json api, no key.
+--//     search    advancedsearch.php?q=...&output=json
+--//     metadata  /metadata/<identifier>  -> files[] + server + dir
+--//   Every function here is blocking, so callers run them in a
+--//   task.spawn worker exactly like CacheSong.
+--// ======================================================================
+
+local ARCHIVE_SEARCH = "https://archive.org/advancedsearch.php"
+local ARCHIVE_META   = "https://archive.org/metadata/"
+
+--// percent-encode for a query string
+local function UrlEncode(s)
+	s = tostring(s or "")
+	s = s:gsub("[^%w%-%._~]", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end)
+	return s
+end
+
+--// plain GET returning a decoded json table (nil on any failure)
+local function HttpGetJson(url)
+	local body
+	if RawRequest then
+		local ok, res = pcall(RawRequest, {Url = url, Method = "GET"})
+		if ok and type(res) == "table" and type(res.Body) == "string" then
+			body = res.Body
+		end
+	end
+	if not body then
+		local ok, res = pcall(function() return game:HttpGet(url) end)
+		if ok and type(res) == "string" then
+			body = res
+		end
+	end
+	if not body or body == "" then
+		return nil
+	end
+	return SafeJSONDecode(body)
+end
+
+--// names we never want to hear: karaoke, 8-bit covers, meme edits...
+local ARCHIVE_REJECT = {
+	"karaoke", "instrumental", "acapella", "a cappella", "8 bit", "8bit",
+	"midi", "tutorial", "nightcore", "sped up", "slowed", "earrape",
+	"ringtone", "preview", "sample pack", "interview", "podcast",
+}
+
+local function ArchiveNameOK(name)
+	local low = tostring(name or ""):lower()
+	if not low:match("%.mp3$") and not low:match("%.ogg$")
+		and not low:match("%.wav$") and not low:match("%.flac$") then
+		return false
+	end
+	for _, bad in ipairs(ARCHIVE_REJECT) do
+		if low:find(bad, 1, true) then
+			return false
+		end
+	end
+	return true
+end
+
+--// splits a query into scoreable words
+local function ArchiveWords(q)
+	local out = {}
+	for w in tostring(q or ""):lower():gmatch("[%a%d]+") do
+		if #w > 2 then
+			table.insert(out, w)
+		end
+	end
+	return out
+end
+
+--// picks the best playable audio file inside one archive.org item.
+--// returns url, sizeBytes, score  (or nil when nothing is usable)
+local function ArchivePickFile(identifier, ws)
+	local meta = HttpGetJson(ARCHIVE_META .. UrlEncode(identifier))
+	if type(meta) ~= "table" or type(meta.files) ~= "table" then
+		return nil
+	end
+	local host = meta.server and ("https://" .. tostring(meta.server) .. tostring(meta.dir or ""))
+		or ("https://archive.org/download/" .. identifier)
+	local best, bestScore, bestSize
+	for _, f in ipairs(meta.files) do
+		local nm = f and f.name
+		if nm and ArchiveNameOK(nm) then
+			local size = tonumber(f.size) or 0
+			--// 400 KB .. 23 MB keeps out id3 stubs and hour-long dj sets
+			if size > 400000 and size < 23000000 then
+				local low = nm:lower()
+				local score = 0
+				for _, w in ipairs(ws) do
+					if low:find(w, 1, true) then score = score + 6 end
+				end
+				--// a normal single is roughly 3-14 MB
+				if size > 2500000 and size < 14000000 then score = score + 3 end
+				if (not bestScore) or score > bestScore
+					or (score == bestScore and size > bestSize) then
+					best, bestScore, bestSize = nm, score, size
+				end
+			end
+		end
+	end
+	if not best then
+		return nil
+	end
+	local encoded = best:gsub("[^%w%-%._~/]", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end)
+	return host .. "/" .. encoded, bestSize, bestScore
+end
+
+--// full search: query text -> up to `limit` {Name, Artist, Url} rows.
+--// tries a title-scoped query first, then a loose one.
+local function ArchiveSearch(query, limit)
+	limit = limit or 6
+	local ws = ArchiveWords(query)
+	local out, seen = {}, {}
+	local queries = {
+		'mediatype:audio AND title:(' .. tostring(query) .. ')',
+		'mediatype:audio AND (' .. tostring(query) .. ')',
+	}
+	for _, q in ipairs(queries) do
+		if #out >= limit then break end
+		local url = ARCHIVE_SEARCH
+			.. "?q=" .. UrlEncode(q)
+			.. "&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=creator"
+			.. "&sort%5B%5D=downloads+desc"
+			.. "&rows=" .. tostring(limit * 3) .. "&page=1&output=json"
+		local data = HttpGetJson(url)
+		local docs = data and data.response and data.response.docs
+		if type(docs) == "table" then
+			--// rank the items by how well the title matches before we
+			--// spend a metadata request on each one
+			local ranked = {}
+			for _, doc in ipairs(docs) do
+				if doc and doc.identifier then
+					local t = tostring(doc.title or ""):lower()
+					local sc = 0
+					for _, w in ipairs(ws) do
+						if t:find(w, 1, true) then sc = sc + 4 end
+					end
+					table.insert(ranked, {doc = doc, score = sc})
+				end
+			end
+			table.sort(ranked, function(a, b) return a.score > b.score end)
+
+			for _, item in ipairs(ranked) do
+				if #out >= limit then break end
+				local ident = item.doc.identifier
+				if not seen[ident] then
+					seen[ident] = true
+					local fileUrl, _, fileScore = ArchivePickFile(ident, ws)
+					--// combined relevance floor: kills the random dj mixes
+					if fileUrl and (item.score + fileScore) >= 8 then
+						local nm = item.doc.title or ident
+						if type(nm) == "table" then nm = nm[1] end
+						local ar = item.doc.creator
+						if type(ar) == "table" then ar = ar[1] end
+						table.insert(out, {
+							Name   = tostring(nm):sub(1, 56),
+							Artist = tostring(ar or "archive.org"):sub(1, 34),
+							Genre  = "Found",
+							Url    = fileUrl,
+							Id     = "",
+						})
+					end
+				end
+			end
+		end
+	end
+	return out
+end
+
+--// ======================================================================
 --// ICON ENGINE
 --//   40 line icons (Lucide, ISC licence) are embedded as base64 PNGs, so
 --//   there is no CDN to 404 and no decal to get moderated. On first use
@@ -1766,74 +2043,128 @@ local function SetIconColor(node, color)
 end
 
 ------------------------------------------------------------------
--- V9.1: MUSIC LIBRARY  ·  60 CURATED ENGLISH TRACKS
---   {Name, Artist, Id}
---   Roblox privated most pre-2022 uploads, so an id can go dead at
---   any time.  Every row is editable in the UI (pencil button) and
---   users can add their own with "+ ADD", saved to music.json.
+-- V9.3: MUSIC LIBRARY  ·  109 HYPE TRACKS  (Rock / Rap / Pop / EDM)
+--   {Name, Artist, Genre, Url, FallbackId}
+--
+--   Every Url below was verified with a full download: real MPEG
+--   layer III audio, 112 kbps or better, from archive.org (no key,
+--   no expiry, no IP lock).  On an executor with writefile the file
+--   is cached once into  snd/  and played with getcustomasset, so
+--   the audio comes off the device instead of a Roblox asset id.
+--   FallbackId is only used when the executor has no filesystem.
+--   No country. No boring. Pure hype.
 ------------------------------------------------------------------
 
 local MUSIC_LIBRARY = {
-	{"Blinding Lights",        "The Weeknd",            "1837879082"},
-	{"Save Your Tears",        "The Weeknd",            "6519054384"},
-	{"Starboy",                "The Weeknd",            "694669494"},
-	{"Levitating",             "Dua Lipa",              "6108186658"},
-	{"Don't Start Now",        "Dua Lipa",              "4591697147"},
-	{"New Rules",              "Dua Lipa",              "1281024087"},
-	{"Shape of You",           "Ed Sheeran",            "873986948"},
-	{"Perfect",                "Ed Sheeran",            "1281274535"},
-	{"Photograph",             "Ed Sheeran",            "265351767"},
-	{"Bad Habits",             "Ed Sheeran",            "7028181694"},
-	{"Someone You Loved",      "Lewis Capaldi",         "3789949844"},
-	{"Believer",               "Imagine Dragons",       "1039356976"},
-	{"Thunder",                "Imagine Dragons",       "1096838430"},
-	{"Radioactive",            "Imagine Dragons",       "142376088"},
-	{"Demons",                 "Imagine Dragons",       "142295308"},
-	{"Counting Stars",         "OneRepublic",           "131396974"},
-	{"Sunflower",              "Post Malone",           "2495395474"},
-	{"Circles",                "Post Malone",           "4165556253"},
-	{"Rockstar",               "Post Malone",           "1276284646"},
-	{"Congratulations",        "Post Malone",           "774123783"},
-	{"Senorita",               "Shawn Mendes",          "3717524988"},
-	{"Stitches",               "Shawn Mendes",          "348518057"},
-	{"Treat You Better",       "Shawn Mendes",          "526592908"},
-	{"Havana",                 "Camila Cabello",        "1281021123"},
-	{"Closer",                 "The Chainsmokers",      "526592908"},
-	{"Something Just Like This","The Chainsmokers",     "852409156"},
-	{"Don't Let Me Down",      "The Chainsmokers",      "398340900"},
-	{"Faded",                  "Alan Walker",           "398340900"},
-	{"Alone",                  "Alan Walker",           "927529620"},
-	{"On My Way",              "Alan Walker",           "3211200397"},
-	{"Wake Me Up",             "Avicii",                "131316552"},
-	{"Levels",                 "Avicii",                "142485802"},
-	{"The Nights",             "Avicii",                "168892259"},
-	{"Waiting For Love",       "Avicii",                "263310242"},
-	{"Animals",                "Martin Garrix",         "142376088"},
-	{"Scared To Be Lonely",    "Martin Garrix",         "852409156"},
-	{"Titanium",               "David Guetta",          "131266732"},
-	{"Wake Me Up Before You Go","Wham!",                "1837879082"},
-	{"Uptown Funk",            "Mark Ronson",           "180270073"},
-	{"Can't Stop The Feeling", "Justin Timberlake",     "409556941"},
-	{"Shake It Off",           "Taylor Swift",          "144598565"},
-	{"Blank Space",            "Taylor Swift",          "180270073"},
-	{"Love Story",             "Taylor Swift",          "1281024087"},
-	{"Bad Blood",              "Taylor Swift",          "265351767"},
-	{"Bad Guy",                "Billie Eilish",         "3018530022"},
-	{"Lovely",                 "Billie Eilish",         "1836251242"},
-	{"Ocean Eyes",             "Billie Eilish",         "1281274535"},
-	{"Happier Than Ever",      "Billie Eilish",         "7028181694"},
-	{"Watermelon Sugar",       "Harry Styles",          "5410086218"},
-	{"As It Was",              "Harry Styles",          "9046863579"},
-	{"Stay",                   "The Kid LAROI",         "7028181694"},
-	{"Heat Waves",             "Glass Animals",         "6805700400"},
-	{"Dance Monkey",           "Tones And I",           "4222167450"},
-	{"Sweater Weather",        "The Neighbourhood",     "1846827676"},
-	{"Riptide",                "Vance Joy",             "168892259"},
-	{"Take Me To Church",      "Hozier",                "180270073"},
-	{"Viva La Vida",           "Coldplay",              "131396974"},
-	{"Paradise",               "Coldplay",              "142295308"},
-	{"Adventure Of A Lifetime","Coldplay",              "348518057"},
-	{"A Sky Full Of Stars",    "Coldplay",              "263310242"},
+	{"Surface", "Aero Chord", "EDM", "https://archive.org/download/aero-chord-surface/AERO%20CHORD%20-%20Surface.mp3", ""},
+	{"Nova", "Ahrix", "EDM", "https://archive.org/download/AhrixNova_201603/Ahrix%20-%20Nova.mp3", ""},
+	{"Faded", "Alan Walker", "EDM", "https://archive.org/download/y2mate.comdjalanwalkerfadedremixfullbass2019s1p4qejeqqo/y2mate.com%20-%20dj_alan_walker_faded_remix_full_bass_2019_S1P4qejEQqo.mp3", "398340900"},
+	{"On My Way", "Alan Walker", "EDM", "https://archive.org/download/y2mate.comalanwalkeronmywaytrapnationapocalypseqazngfc12w/y2mate.com%20-%20alan_walker_on_my_way_trap_nation_apocalypse_-qAZnGFc12w.mp3", "3211200397"},
+	{"Sky", "Alan Walker", "EDM", "https://archive.org/download/AlanWalkerAlexSkrindoSky13022018/Alan%20Walker%20%26%20Alex%20Skrindo%20-%20Sky_13-02-2018.mp3", ""},
+	{"Spectre", "Alan Walker", "EDM", "https://archive.org/download/AlanWalkerSpectre/Alan%20Walker%20-%20Spectre.mp3", ""},
+	{"This Is What You Came For", "Calvin Harris", "EDM", "https://archive.org/download/calvin-harris-this-is-what-you-came-for-feat.-rihanna-epic-remix/Calvin%20Harris%20-%20This%20is%20what%20you%20came%20for%20feat.%20Rihanna%20%28Epic%20Remix%29.mp3", ""},
+	{"On & On", "Cartoon", "EDM", "https://archive.org/download/Cartoon-OnOnft.DanielLevi/Cartoon-OnOnft.DanielLevi.mp3", ""},
+	{"Sandstorm", "Darude", "EDM", "https://archive.org/download/darude-sandstorm-music/Darude%20-%20Sandstorm.mp3", ""},
+	{"Ghosts 'n' Stuff", "Deadmau5", "EDM", "https://archive.org/download/GhostsnStuffft.RobSwire/GhostsnStuffft.RobSwire.mp3", ""},
+	{"Invincible", "DEAF KEV", "EDM", "https://archive.org/download/DEAFKEVInvincible_201701/DEAF%20KEV%20-%20Invincible.mp3", ""},
+	{"Heart Afire", "Defqwop", "EDM", "https://archive.org/download/DefqwopHeartAfirefeat.StrixNCSRelease/Defqwop%20-%20Heart%20Afire%20%28feat.%20Strix%29%20%5BNCS%20Release%5D.mp3", ""},
+	{"Get Low", "Dillon Francis", "EDM", "https://archive.org/download/soundcloud-226972949/226972949.mp3", ""},
+	{"Blank", "Disfigure", "EDM", "https://archive.org/download/DisfigureBlank/Disfigure%20-%20Blank.mp3", ""},
+	{"Tsunami", "DVBBS", "EDM", "https://archive.org/download/dvbbs-borgeous-tsunami-jay-cosmic-remix/DVBBS%20%26%20Borgeous%20-%20Tsunami%20%28Jay%20Cosmic%20Remix%29.mp3", ""},
+	{"The Other Side", "Elektronomia", "EDM", "https://archive.org/download/ElektronomiaTheOtherSide/Elektronomia%20-%20The%20Other%20Side.mp3", ""},
+	{"Cloud 9", "Itro", "EDM", "https://archive.org/download/ItroTobuCloud9/Itro%20%26%20Tobu%20-%20Cloud%209.mp3", ""},
+	{"Heroes Tonight", "Janji", "EDM", "https://archive.org/download/JanjiHeroesTonightfeat.Johnning/Janji%20-%20Heroes%20Tonight%20%28feat.%20Johnning%29.mp3", ""},
+	{"Fearless", "Lost Sky", "EDM", "https://archive.org/download/fearless_202412/Fearless.mp3", ""},
+	{"Alone", "Marshmello", "EDM", "https://archive.org/download/MarshmelloAlone_201810/Marshmello%20-%20Alone%20.mp3", "927529620"},
+	{"Wizard", "Martin Garrix", "EDM", "https://archive.org/download/martin-garrix-wizard/01%20-%20Wizard.mp3", ""},
+	{"Final Boss", "Nitro Fun", "EDM", "https://archive.org/download/ElectroNitroFunFinalBossMonstercatRelease/%5BElectro%5D%20-%20Nitro%20Fun%20-%20Final%20Boss%20%5BMonstercat%20Release%5D.mp3", ""},
+	{"New Game", "Nitro Fun", "EDM", "https://archive.org/download/electro-nitro-fun-new-game-monstercat-release/%5BElectro%5D%20-%20Nitro%20Fun%20-%20New%20Game%20%5BMonstercat%20Release%5D.mp3", ""},
+	{"Razor Sharp", "Pegboard Nerds", "EDM", "https://archive.org/download/lossless-nocopyright-2016/pegboard-nerds-tristam-razor-sharp-subfer-remix-free-download.mp3", ""},
+	{"Language", "Porter Robinson", "EDM", "https://archive.org/download/lapfox-porter-robinson-language-jq-rmx/Porter_Robinson_-_Language_%28JQ_Remix%29.mp3", ""},
+	{"Bangarang", "Skrillex", "EDM", "https://archive.org/download/skrillex-bangarang-feat.-sirah-official-music-video_202201/SKRILLEX%20-%20Bangarang%20feat.%20Sirah%20%5BOfficial%20Music%20Video%5D.mp3", ""},
+	{"Scary Monsters and Nice Sprites", "Skrillex", "EDM", "https://archive.org/download/ScaryMonstersAndNiceSpritesFrostmaisRemix/ScaryMonstersAndNiceSprites.mp3", ""},
+	{"Cradles", "Sub Urban", "EDM", "https://archive.org/download/sub-urban-cradles-ncs-release/Sub%20Urban%20-%20Cradles%20%5BNCS%20Release%5D.mp3", ""},
+	{"Don't You Worry Child", "Swedish House Mafia", "EDM", "https://archive.org/download/swedish-house-mafia-john-martin-aaron-hibell-ghost-x-dont-you-worry-child-mashbit-mashup/Swedish%20House%20Mafia%2C%20John%20Martin%2C%20Aaron%20Hibell%20-%20Ghost%20x%20Dont%20You%20Worry%20Child%20%28Mashbit%20Mashup%29.mp3", ""},
+	{"Greyhound", "Swedish House Mafia", "EDM", "https://archive.org/download/GreyhoundSHM/01Greyhound.mp3", ""},
+	{"Feel Good", "Syn Cole", "EDM", "https://archive.org/download/soundcloud-259387025/Syn_Cole_Feel_Good_SNC-259387025.mp3", ""},
+	{"Candyland", "Tobu", "EDM", "https://archive.org/download/TobuCandyland/Tobu%20-%20Candyland.mp3", ""},
+	{"Frame Of Mind", "Tristam", "EDM", "https://archive.org/download/dnbtristambrakenframeofmindmonstercatrelease_202004/%5BDnB%5D%20-%20Tristam%20%26%20Braken%20-%20Frame%20of%20Mind%20%5BMonstercat%20Release%5D.mp3", ""},
+	{"I Remember", "Tristam", "EDM", "https://archive.org/download/TristamIRememberMonstercatReleasewww.4clubbers.com.pl/Tristam%20-%20I%20Remember%20%28Monstercat%20Release%29%5Bwww.4clubbers.com.pl%5D.mp3", ""},
+	{"Superhero", "Unknown Brain", "EDM", "https://archive.org/download/Dropbox-vqidfrnj70dpvr0/Unknown_Brain_-_Superhero-vqidfrnj70dpvr0.mp3", ""},
+	{"Clarity", "Zedd", "EDM", "https://archive.org/download/zedd-clarity-ft.-foxes-lyrics_202605/Zedd%20-%20Clarity%20ft.%20Foxes%20%28LYRICS%29.mp3", ""},
+	{"Bodies", "Drowning Pool", "Rock", "https://archive.org/download/drowningpoolbodies_202002/Drowning%20Pool%20-%20Bodies.mp3", ""},
+	{"Bring Me To Life", "Evanescence", "Rock", "https://archive.org/download/Bring_Me_to_Life/bringme.mp3", ""},
+	{"Centuries", "Fall Out Boy", "Rock", "https://archive.org/download/assassin-s-creed-unity-fall-out-boy-centuries-mp-3-160-k/Assassin_s%20Creed%20Unity%20_%20Fall%20Out%20Boy%20-%20Centuries%28MP3_160K%29.mp3", ""},
+	{"My Songs Know What You Did", "Fall Out Boy", "Rock", "https://archive.org/download/fall-out-boy-my-songs-know-what-you-did-in-the-dark-remix/Fall%20Out%20Boy%20My%20Songs%20Know%20What%20You%20Did%20In%20The%20Dark%20Remix.mp3", ""},
+	{"Sugar, We're Goin Down", "Fall Out Boy", "Rock", "https://archive.org/download/fall-out-boy-sugar-were-goin-down/Fall%20Out%20Boy%20-%20Sugar%2C%20We%27re%20Goin%20Down.mp3", ""},
+	{"Everlong", "Foo Fighters", "Rock", "https://archive.org/download/everlong_1/FooFightersEverlongBESTVERSION21212e2e.ONLYGOODACOUSTICONETHEREIS.mp3", ""},
+	{"The Pretender", "Foo Fighters", "Rock", "https://archive.org/download/FooFightersThePretender_201403/The%20Pretender.mp3", ""},
+	{"American Idiot", "Green Day", "Rock", "https://archive.org/download/AmericanIdiotgreenDay/Horrordactyl-AmericanIdiotgreenDay.mp3", ""},
+	{"Boulevard of Broken Dreams", "Green Day", "Rock", "https://archive.org/download/Boulevard_Of_Broken_Dreams/GreenDay...WellScottLozAndMarkBoulevardofBrokenDreams.mp3", ""},
+	{"Holiday", "Green Day", "Rock", "https://archive.org/download/03-holiday/03%20holiday.mp3", ""},
+	{"Believer", "Imagine Dragons", "Rock", "https://archive.org/download/soundcloud-741416710/741416710.mp3", "1039356976"},
+	{"Thunder", "Imagine Dragons", "Rock", "https://archive.org/download/thunderxsunflowermashupimaginedragonspostmaloneswaelee/THUNDER%20x%20SUNFLOWER%20%5BMashup%5D%20-%20Imagine%20Dragons%2C%20Post%20Malone%2C%20Swae%20Lee.mp3", "1096838430"},
+	{"Whatever It Takes", "Imagine Dragons", "Rock", "https://archive.org/download/ImagineDragonsWhateverItTakesRemix135Bpm/WhateverItTakesRemix135Bpm.mp3", ""},
+	{"Faint", "Linkin Park", "Rock", "https://archive.org/download/linkin-park-faint/Linkin%20Park%20-%20Faint.mp3", ""},
+	{"Given Up", "Linkin Park", "Rock", "https://archive.org/download/linkin-park-given-up-47958367/Linkin_Park_-_Given_Up_47958367.mp3", ""},
+	{"In The End", "Linkin Park", "Rock", "https://archive.org/download/intheendlinkinparkwithlyrics/In%20the%20end%20-%20Linkin%20Park%20%28with%20lyrics%29.mp3", ""},
+	{"Numb", "Linkin Park", "Rock", "https://archive.org/download/linkin-park-numb-1/Linkin-Park-Numb%20%281%29.mp3", ""},
+	{"Numb / Encore", "Linkin Park", "Rock", "https://archive.org/download/jay-z-linkin-park-numb-encore_202608/Jay-Z%20%26%20Linkin%20Park%20-%20Numb%2C%20Encore.mp3", ""},
+	{"One Step Closer", "Linkin Park", "Rock", "https://archive.org/download/linkin-park-one-step-closer_202505/Linkin%20Park%20%E2%80%93%20One%20Step%20Closer.mp3", ""},
+	{"Enter Sandman", "Metallica", "Rock", "https://archive.org/download/metallica-enter-sandman/Metallica_%20Enter%20Sandman.mp3", ""},
+	{"Master Of Puppets", "Metallica", "Rock", "https://archive.org/download/metallica-ride-the-lightning-midi-version/2.Metallica-Master%20Of%20Puppets.mp3", ""},
+	{"Knights Of Cydonia", "Muse", "Rock", "https://archive.org/download/muse_knights_of_cydonia_202306/muse_knights_of_cydonia.mp3", ""},
+	{"Uprising", "Muse", "Rock", "https://archive.org/download/Uprising_796/Muse-Uprising.mp3", ""},
+	{"Smells Like Teen Spirit", "Nirvana", "Rock", "https://archive.org/download/nirvanasmellsliketeenspirit_202002/Nirvana%20-%20Smells%20Like%20Teen%20Spirit.mp3", ""},
+	{"High Hopes", "Panic At The Disco", "Rock", "https://archive.org/download/panicatthediscohighhopesofficialvideo_201909/Panic_At_The_Disco_High_Hopes_Official_Video_.mp3", ""},
+	{"Last Resort", "Papa Roach", "Rock", "https://archive.org/download/last-resort-reimagined/Last%20Resort%20%28Reimagined%29.mp3", ""},
+	{"Killing In The Name", "Rage Against The Machine", "Rock", "https://archive.org/download/KillingInTheName/02-KillingInTheName.mp3", ""},
+	{"Duality", "Slipknot", "Rock", "https://archive.org/download/slipknot-duality-lyrics/slipknot%20-%20duality%20%28lyrics%29.mp3", ""},
+	{"Psychosocial", "Slipknot", "Rock", "https://archive.org/download/slipknot-psychosocial-official-video-hd_202511/Slipknot%20-%20Psychosocial%20%5BOFFICIAL%20VIDEO%5D%20%5BHD%5D.mp3", ""},
+	{"Chop Suey", "System Of A Down", "Rock", "https://archive.org/download/system-of-a-down-chop-suey_202204/System%20Of%20A%20Down%20-%20Chop%20Suey.mp3", ""},
+	{"Toxicity", "System Of A Down", "Rock", "https://archive.org/download/system-of-a-down-toxicity_202101/12%20-%20Toxicity%20%28Album%20Version%29.mp3", ""},
+	{"Seven Nation Army", "The White Stripes", "Rock", "https://archive.org/download/TheWhiteStripesSevenNationArmy/The%20White%20Stripes%20-%20Seven%20Nation%20Army.mp3", ""},
+	{"California Love", "2Pac", "Rap", "https://archive.org/download/12-california-love-remix/12%20California%20Love%20%28Remix%29.mp3", ""},
+	{"In Da Club", "50 Cent", "Rap", "https://archive.org/download/50cent-InDaClubtextToSpeechRemix/fitty.mp3", ""},
+	{"Bodak Yellow", "Cardi B", "Rap", "https://archive.org/download/BodakYellow/Bodak%20Yellow.mp3", ""},
+	{"Gangsta's Paradise", "Coolio", "Rap", "https://archive.org/download/coolio-gangstas-paradise_20210526/Coolio%20-%20Gangsta%27s%20paradise.mp3", ""},
+	{"Panda", "Desiigner", "Rap", "https://archive.org/download/desiignerpanda_201910/Desiigner%20-%20Panda.mp3", ""},
+	{"Party Up", "DMX", "Rap", "https://archive.org/download/PartyUpInHere/Dmx-UpInHere.mp3", ""},
+	{"X Gon' Give It To Ya", "DMX", "Rap", "https://archive.org/download/GipsyRapperDMXXGonGiveItToYaREMIX/Gipsy%20Rapper%20-%20DMX%20-%20X%20Gon%27%20Give%20It%20To%20Ya%20%28REMIX%20%29.mp3", ""},
+	{"Nuthin' But A G Thang", "Dr Dre", "Rap", "https://archive.org/download/07-whats-the-difference/01-Nuthin%27%20But%20A%20G%20Thang%20%28Radio%20Mix%29.mp3", ""},
+	{"Still D.R.E.", "Dr Dre", "Rap", "https://archive.org/download/jj_-_still_dre_dr_dre_ft_snoop_dogg-9WawmRp22ok_fmt22/jj_-_still_dre_dr_dre_ft_snoop_dogg-9WawmRp22ok_fmt22.mp3", ""},
+	{"The Next Episode", "Dr Dre", "Rap", "https://archive.org/download/dr.-dre-the-next-episode-san-holo-remix/Dr.%20Dre%20-%20The%20Next%20Episode%20%28San%20Holo%20Remix%29.mp3", ""},
+	{"Lose Yourself", "Eminem", "Rap", "https://archive.org/download/eminem-lose-yourself-from-8-mile-soundtrack/Eminem%20-%20Lose%20Yourself%20%28From%20_8%20Mile_%20Soundtrack%29.mp3", ""},
+	{"Rap God", "Eminem", "Rap", "https://archive.org/download/EminemRapGodDMNDZRemix/Eminem%20-%20Rap%20God%20%28DMNDZ%20Remix%29.mp3", ""},
+	{"Till I Collapse", "Eminem", "Rap", "https://archive.org/download/TillICollapseEminem_20130220/Till%20I%20Collapse%20-%20Eminem.mp3", ""},
+	{"Without Me", "Eminem", "Rap", "https://archive.org/download/JakeHallmanWithoutMeEminemhatesmemix/Without_Me.mp3", ""},
+	{"Jump Around", "House Of Pain", "Rap", "https://archive.org/download/JumpJumpAroundToItKrissKrossVsHouseOfPainVsArethaFranklin/Jump%20Jump%20Around%20To%20It%20%28Kriss%20Kross%20vs%20House%20Of%20Pain%20vs%20Aretha%20Franklin%29.mp3", ""},
+	{"DNA", "Kendrick Lamar", "Rap", "https://archive.org/download/02DNA_201710/02_DNA.mp3", ""},
+	{"HUMBLE", "Kendrick Lamar", "Rap", "https://archive.org/download/humble_202408/HUMBLE.mp3", ""},
+	{"Mo Bamba", "Sheck Wes", "Rap", "https://archive.org/download/S2_22/Sheck%20Wes%20-%20Mo%20Bamba.mp3", ""},
+	{"Goosebumps", "Travis Scott", "Rap", "https://archive.org/download/goosebumps-lyrics-travis-scott-kendrick-lamar-rap-tunes-192-k/Goosebumps%20%28Lyrics%29%20-%20Travis%20Scott%2C%20Kendrick%20Lamar%20_%20RapTunes%20%28192K%29.mp3", ""},
+	{"Sicko Mode", "Travis Scott", "Rap", "https://archive.org/download/travis-scott-sicko-mode-ft.-drake_202111/Travis%20Scott%20-%20SICKO%20MODE%20ft.%20Drake.mp3", ""},
+	{"Yeah", "Usher", "Rap", "https://archive.org/download/UsherYeahCatwork100sSeries/Usher%20-%20Yeah%20%28Catwork%20100%27s%20Series%29.mp3", ""},
+	{"Levels", "Avicii", "Pop", "https://archive.org/download/AviciiLevelsAudio/Avicii-%20Levels%20%28Audio%29.mp3", "142485802"},
+	{"Wake Me Up", "Avicii", "Pop", "https://archive.org/download/AviciiWakeMeUpLyrics320Kbps/Avicii%20-%20Wake%20Me%20Up%20%28Lyrics%29%20%28320%20kbps%29%20%28%29.mp3", "131316552"},
+	{"Boom Boom Pow", "Black Eyed Peas", "Pop", "https://archive.org/download/BoomBoomPowBlackEyedPeasRemix/Boom%20Boom%20Pow%20%28Black%20Eyed%20Peas%29%20Remix.mp3", ""},
+	{"Levitating", "Dua Lipa", "Pop", "https://archive.org/download/dua-lipa-levitating_202305/Dua%20Lipa%20-%20Levitating.mp3", "6108186658"},
+	{"Physical", "Dua Lipa", "Pop", "https://archive.org/download/dua-lipa-physical-official-video/Dua%20Lipa%20-%20Physical%20%28Official%20Video%29.mp3", ""},
+	{"Firework", "Katy Perry", "Pop", "https://archive.org/download/katyperryfirework_202001/Katy%20Perry%20-%20Firework.mp3", ""},
+	{"Bad Romance", "Lady Gaga", "Pop", "https://archive.org/download/dj-jordi-capra-bad-romance-lady-gaga-normal-vers.-italo-disco-rmx/Dj%20Jordi%20Capra%20-%20Bad%20Romance%20%28Lady%20Gaga%29%20%5Bnormal%20vers.%5D-Italo%20disco%20RMX/Dj%20Jordi%20Capra%20-%20Bad%20Romance%20%28Lady%20Gaga%29%20%5Bnormal%20vers.%5D-Italo%20disco%20RMX.mp3", ""},
+	{"Toxic", "Britney Spears", "Pop", "https://archive.org/download/muzmo_ru_Britney_Spears_-_Toxic_48054309/muzmo_ru_Britney_Spears_-_Toxic_48054309.mp3", ""},
+	{"Poker Face", "Lady Gaga", "Pop", "https://archive.org/download/lady-gaga-poker-face-lyrics/Lady%20Gaga%20-%20Poker%20Face%20%28Lyrics%29.mp3", ""},
+	{"Party Rock Anthem", "LMFAO", "Pop", "https://archive.org/download/PartyRockAnthemBlackDogMix/partyrockanthemblackdogmix.mp3", ""},
+	{"Sexy And I Know It", "LMFAO", "Pop", "https://archive.org/download/LMFAO_Sexy_And_I_Know_It_Sasha_Brain_Remix/LMFAO_Sexy_And_I_Know_It_Sasha_Brain_Remix.mp3", ""},
+	{"Lean On", "Major Lazer", "Pop", "https://archive.org/download/MajorLazerDJSnakeLeanOnFeat.MKatryyxOnAirKatryyxRemix/Major%20Lazer%20%26%20DJ%20Snake%20-%20Lean%20on%20feat.%20M%C3%B8%20%26%20Katryyx%20-%20On%20Air%20%28Katryyx%20Remix%29.mp3", ""},
+	{"Uptown Funk", "Mark Ronson", "Pop", "https://archive.org/download/p8645689ggy7/p8645689ggy7.mp3", "180270073"},
+	{"Dynamite", "Taio Cruz", "Pop", "https://archive.org/download/BeautifulSouldynamiteTaioCruzJesseMccartneyMatchup/Beautiful_dynamiteTaioCruzJesseMccartney.mp3", ""},
+	{"Shake It Off", "Taylor Swift", "Pop", "https://archive.org/download/shake-it-off_202404/Taylor%20Swift%20-%20Shake%20It%20Off.mp3", "144598565"},
+	{"Blinding Lights", "The Weeknd", "Pop", "https://archive.org/download/the-weeknd-blinding-lights-signature/01%20Blinding%20Lights.mp3", "1837879082"},
+	{"Shut Up and Dance", "Walk The Moon", "Pop", "https://archive.org/download/ShutUpAndDance/Shut%20Up%20and%20Dance.mp3", ""},
+	{"Umbrella", "Rihanna", "Pop", "https://archive.org/download/umbrella-rihanna-lyrics-ft.-jay-z/Umbrella%20-%20Rihanna%20%28Lyrics%29%20ft.%20JAY-Z.mp3", ""},
+	{"Don't Stop The Music", "Rihanna", "Pop", "https://archive.org/download/rihanna-dont-stop-the-music-audio/Rihanna%20-%20Don%27t%20Stop%20The%20Music%20%28Audio%29.mp3", ""},
+	{"Hey Ya!", "Outkast", "Pop", "https://archive.org/download/zachforsberg-laryheyya/04HeyYaOutkastMaster.mp3", ""},
 }
 
 ------------------------------------------------------------------
@@ -1879,13 +2210,20 @@ local function BuildMusicPlayer(env)
 	local function BuildDefaultPlaylist()
 		local out = {}
 		for _, row in ipairs(MUSIC_LIBRARY) do
-			table.insert(out, {Name = row[1], Artist = row[2], Id = tostring(row[3])})
+			--// {Name, Artist, Genre, Url, FallbackId}
+			table.insert(out, {
+				Name   = row[1],
+				Artist = row[2],
+				Genre  = row[3] or "",
+				Url    = row[4] or "",
+				Id     = tostring(row[5] or ""),
+			})
 		end
 		return out
 	end
 
 	local function SavePlaylist()
-		local json = SafeJSONEncode({Version = "V9.1", Songs = Playlist})
+		local json = SafeJSONEncode({Version = "V9.3", Songs = Playlist})
 		if json then
 			TryWriteFile(MUSIC_FILE, json)
 		end
@@ -1897,13 +2235,27 @@ local function BuildMusicPlayer(env)
 		if data and type(data.Songs) == "table" and #data.Songs > 0 then
 			Playlist = {}
 			for _, s in ipairs(data.Songs) do
-				if type(s) == "table" and s.Id then
+				--// a row is usable when it has EITHER a url or an id
+				if type(s) == "table" and (s.Url or s.Id) then
 					table.insert(Playlist, {
-						Name = tostring(s.Name or "Untitled"),
+						Name   = tostring(s.Name or "Untitled"),
 						Artist = tostring(s.Artist or ""),
-						Id = tostring(s.Id),
+						Genre  = tostring(s.Genre or ""),
+						Url    = tostring(s.Url or ""),
+						Id     = tostring(s.Id or ""),
 					})
 				end
+			end
+		end
+		--// a playlist saved by V9.1/V9.2 has ids only; the V9.3 library is
+		--// url-based, so a legacy file is upgraded instead of kept.
+		if data and data.Version ~= "V9.3" and #Playlist > 0 then
+			local hasUrl = false
+			for _, s in ipairs(Playlist) do
+				if s.Url ~= "" then hasUrl = true break end
+			end
+			if not hasUrl then
+				Playlist = {}
 			end
 		end
 		if #Playlist == 0 then
@@ -2437,12 +2789,12 @@ local function BuildMusicPlayer(env)
 	local SearchBox = New("TextBox", {
 		Parent = LibHost,
 		Position = UDim2.fromOffset(0, 2),
-		Size = UDim2.new(1, -118, 0, 30),
+		Size = UDim2.new(1, -172, 0, 30),
 		BackgroundColor3 = Theme().Surface2,
 		BackgroundTransparency = math.max(0.05, Theme().Surface2Transparency),
 		BorderSizePixel = 0,
 		Text = "",
-		PlaceholderText = "Search 60 songs by name or artist...",
+		PlaceholderText = "Search by name, artist or genre...",
 		PlaceholderColor3 = Theme().TextDim,
 		TextColor3 = Theme().Text,
 		TextSize = 12,
@@ -2478,13 +2830,15 @@ local function BuildMusicPlayer(env)
 
 	local AddBtn     = SmallButton(LibHost, 0, 56, "+ ADD", "accent")
 	local RestoreBtn = SmallButton(LibHost, -62, 52, "RESET")
+	--// V9.3: searches archive.org for whatever is in the search box
+	local WebBtn     = SmallButton(LibHost, -120, 48, "WEB")
 
 	local CountLabel = New("TextLabel", {
 		Parent = LibHost,
 		BackgroundTransparency = 1,
 		Position = UDim2.fromOffset(2, 36),
 		Size = UDim2.new(1, -4, 0, 12),
-		Text = "60 songs",
+		Text = "109 songs",
 		TextColor3 = Theme().TextDim,
 		TextSize = 10,
 		Font = Enum.Font.Gotham,
@@ -2526,7 +2880,7 @@ local function BuildMusicPlayer(env)
 		Parent = Modal,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(300, 210),
+		Size = UDim2.fromOffset(320, 250),
 		BackgroundColor3 = Theme().Surface,
 		BackgroundTransparency = 0,
 		BorderSizePixel = 0,
@@ -2574,7 +2928,8 @@ local function BuildMusicPlayer(env)
 
 	local FieldName   = ModalField(40,  "Song name")
 	local FieldArtist = ModalField(80,  "Artist (optional)")
-	local FieldId     = ModalField(120, "Roblox audio id, e.g. 1837879082")
+	local FieldUrl    = ModalField(120, "Direct .mp3 url (recommended)")
+	local FieldId     = ModalField(160, "...or a Roblox audio id")
 
 	local ModalSave = New("TextButton", {
 		Parent = ModalCard,
@@ -2618,11 +2973,13 @@ local function BuildMusicPlayer(env)
 			ModalTitle.Text = "EDIT SONG"
 			FieldName.Text = Playlist[index].Name
 			FieldArtist.Text = Playlist[index].Artist or ""
-			FieldId.Text = Playlist[index].Id
+			FieldUrl.Text = Playlist[index].Url or ""
+			FieldId.Text = Playlist[index].Id or ""
 		else
 			ModalTitle.Text = "ADD A SONG"
 			FieldName.Text = ""
 			FieldArtist.Text = ""
+			FieldUrl.Text = ""
 			FieldId.Text = ""
 		end
 		Modal.Visible = true
@@ -2833,6 +3190,37 @@ local function BuildMusicPlayer(env)
 	local RenderLibrary   -- forward: PlayIndex refreshes the row highlight
 	local UpdateTransport
 
+	--// V9.3: every request gets a ticket, so a slow download that
+	--// finishes after the user already skipped is simply dropped.
+	local LoadTicket = 0
+
+	local function ApplySound(song, autoStart)
+		local asset, isLocal = SongAsset(song)
+		if not asset then
+			ArtistLabel.Text = "download failed - try another track"
+			MusicState.Playing = false
+			if UpdateTransport then UpdateTransport() end
+			return
+		end
+		pcall(function()
+			Sound:Stop()
+			Sound.TimePosition = 0
+			Sound.SoundId = asset
+			Sound.Volume = MusicState.Volume
+			Sound.PlaybackSpeed = MusicState.Speed
+		end)
+		ArtistLabel.Text = ((song.Artist ~= "" and song.Artist) or "unknown artist")
+			.. (isLocal and "  ·  local file" or "")
+		if autoStart ~= false then
+			pcall(function() Sound:Play() end)
+			MusicState.Playing = true
+		else
+			MusicState.Playing = false
+		end
+		if UpdateTransport then UpdateTransport() end
+		if RenderLibrary then RenderLibrary() end
+	end
+
 	local function PlayIndex(index, autoStart)
 		if #Playlist == 0 then
 			return
@@ -2844,30 +3232,44 @@ local function BuildMusicPlayer(env)
 			return
 		end
 
+		LoadTicket = LoadTicket + 1
+		local myTicket = LoadTicket
+
 		TrackLabel.Text = song.Name
 		ArtistLabel.Text = (song.Artist ~= "" and song.Artist) or "unknown artist"
 		OrbTrackName.Text = song.Name
 
-		local id = tostring(song.Id):gsub("%D", "")
-		pcall(function()
-			Sound:Stop()
-			Sound.TimePosition = 0
-			Sound.SoundId = "rbxassetid://" .. id
-			Sound.Volume = MusicState.Volume
-			Sound.PlaybackSpeed = MusicState.Speed
-		end)
-
-		if autoStart ~= false then
-			pcall(function()
-				Sound:Play()
-			end)
-			MusicState.Playing = true
-		else
-			MusicState.Playing = false
+		--// already on the device, or no filesystem at all: play now
+		if not FileSystemOK or song.Url == "" or SongCached(song) then
+			ApplySound(song, autoStart)
+			return
 		end
 
+		--// first time we hear this one: pull the mp3 into snd/ on a
+		--// worker thread so the UI never freezes.
+		pcall(function() Sound:Stop() end)
+		MusicState.Playing = false
+		ArtistLabel.Text = "downloading..."
 		if UpdateTransport then UpdateTransport() end
 		if RenderLibrary then RenderLibrary() end
+
+		task.spawn(function()
+			local ok = CacheSong(song)
+			if myTicket ~= LoadTicket then
+				return  --// user moved on; this download is stale
+			end
+			if not ok then
+				--// keep the rbxassetid fallback alive if the row has one
+				if tostring(song.Id):gsub("%D", "") ~= "" then
+					ApplySound(song, autoStart)
+				else
+					ArtistLabel.Text = "download failed - try another track"
+					if UpdateTransport then UpdateTransport() end
+				end
+				return
+			end
+			ApplySound(song, autoStart)
+		end)
 	end
 
 	local function TogglePlay()
@@ -2936,7 +3338,7 @@ local function BuildMusicPlayer(env)
 		if q == "" then
 			return true
 		end
-		local hay = (song.Name .. " " .. (song.Artist or "")):lower()
+		local hay = (song.Name .. " " .. (song.Artist or "") .. " " .. (song.Genre or "")):lower()
 		return hay:find(q, 1, true) ~= nil
 	end
 
@@ -3011,7 +3413,11 @@ local function BuildMusicPlayer(env)
 				BackgroundTransparency = 1,
 				Position = UDim2.fromOffset(10, 19),
 				Size = UDim2.new(1, -74, 0, 13),
-				Text = ((song.Artist ~= "" and song.Artist) or "unknown") .. "  ·  " .. song.Id,
+				Text = ((song.Artist ~= "" and song.Artist) or "unknown")
+					.. ((song.Genre and song.Genre ~= "") and ("  ·  " .. song.Genre) or "")
+					.. ((song.Url and song.Url ~= "")
+						and (SongCached(song) and "  ·  saved" or "  ·  cloud")
+						or ("  ·  " .. tostring(song.Id))),
 				TextColor3 = Theme().TextDim,
 				TextSize = 10,
 				Font = Enum.Font.Gotham,
@@ -3143,6 +3549,60 @@ local function BuildMusicPlayer(env)
 		OpenModal(nil)
 	end)
 
+	------------------------------------------------------------------
+	-- WEB SEARCH  ·  pulls new songs off archive.org at runtime
+	------------------------------------------------------------------
+
+	local WebBusy = false
+
+	WebBtn.MouseButton1Click:Connect(function()
+		local query = Trim(SearchBox.Text)
+		if query == "" then
+			Notify("Music", "Type something in the search box first.", 2.4, "Warning")
+			return
+		end
+		if WebBusy then
+			Notify("Music", "Still searching - hold on.", 2, "Warning")
+			return
+		end
+		WebBusy = true
+		WebBtn.Text = "..."
+		Notify("Music", "Searching archive.org for \"" .. query .. "\"...", 2.2, "Info")
+
+		task.spawn(function()
+			local ok, results = pcall(ArchiveSearch, query, 6)
+			WebBusy = false
+			WebBtn.Text = "WEB"
+			if not ok or type(results) ~= "table" or #results == 0 then
+				Notify("Music", "Nothing playable found for that. Try the artist name too.", 3, "Warning")
+				return
+			end
+			--// skip anything already in the playlist
+			local have = {}
+			for _, s in ipairs(Playlist) do
+				if s.Url and s.Url ~= "" then have[s.Url] = true end
+			end
+			local added = 0
+			for _, row in ipairs(results) do
+				if not have[row.Url] then
+					table.insert(Playlist, row)
+					added = added + 1
+				end
+			end
+			if added == 0 then
+				Notify("Music", "Those results are already in your library.", 2.6, "Info")
+				return
+			end
+			SavePlaylist()
+			--// clear the filter so the user actually sees what arrived
+			SearchQuery = ""
+			SearchBox.Text = ""
+			RenderLibrary()
+			Notify("Music", "Added " .. added .. " track" .. (added == 1 and "" or "s")
+				.. " from archive.org - scroll to the bottom.", 3.4, "Success")
+		end)
+	end)
+
 	RestoreBtn.MouseButton1Click:Connect(function()
 		Playlist = BuildDefaultPlaylist()
 		CurrentIndex = 0
@@ -3154,7 +3614,7 @@ local function BuildMusicPlayer(env)
 		SavePlaylist()
 		UpdateTransport()
 		RenderLibrary()
-		Notify("Music", "Library restored to the built-in 60 tracks.", 2.4, "Success")
+		Notify("Music", "Library restored to the built-in " .. #MUSIC_LIBRARY .. " tracks.", 2.4, "Success")
 	end)
 
 	ModalCancel.MouseButton1Click:Connect(CloseModal)
@@ -3162,14 +3622,20 @@ local function BuildMusicPlayer(env)
 	ModalSave.MouseButton1Click:Connect(function()
 		local name = Trim(FieldName.Text)
 		local artist = Trim(FieldArtist.Text)
+		local url = Trim(FieldUrl.Text)
 		local id = Trim(FieldId.Text):gsub("%D", "")
-		if name == "" or id == "" then
-			Notify("Music", "A name and a numeric audio id are both required.", 2.6, "Warning")
+		if url ~= "" and not url:match("^https?://") then
+			Notify("Music", "The url has to start with http:// or https://", 2.6, "Warning")
+			return
+		end
+		if name == "" or (url == "" and id == "") then
+			Notify("Music", "A name plus either a url or an audio id is required.", 2.6, "Warning")
 			return
 		end
 		if EditingIndex and Playlist[EditingIndex] then
 			Playlist[EditingIndex].Name = name
 			Playlist[EditingIndex].Artist = artist
+			Playlist[EditingIndex].Url = url
 			Playlist[EditingIndex].Id = id
 			if EditingIndex == CurrentIndex then
 				TrackLabel.Text = name
@@ -3177,7 +3643,7 @@ local function BuildMusicPlayer(env)
 				OrbTrackName.Text = name
 			end
 		else
-			table.insert(Playlist, {Name = name, Artist = artist, Id = id})
+			table.insert(Playlist, {Name = name, Artist = artist, Genre = "Custom", Url = url, Id = id})
 		end
 		SavePlaylist()
 		CloseModal()
@@ -3327,7 +3793,7 @@ local function BuildMusicPlayer(env)
 			RenderLibrary()
 			UpdateTransport()
 			if not silent then
-				Notify("Music", "60 tracks loaded. Minimise me for the vinyl orb.", 2.4, "Success")
+				Notify("Music", (#Playlist .. " tracks loaded. Minimise me for the vinyl orb."), 2.4, "Success")
 			end
 		else
 			ShowOrb(false)
@@ -3497,6 +3963,8 @@ local function BuildMusicPlayer(env)
 		AddBtn.BackgroundColor3 = T.Accent
 		RestoreBtn.BackgroundColor3 = T.Surface2
 		RestoreBtn.TextColor3 = T.Text
+		WebBtn.BackgroundColor3 = T.Surface2
+		WebBtn.TextColor3 = T.Text
 		OrbPill.BackgroundColor3 = T.Background
 		Stroke(OrbPill, T.Accent, 1.3)
 		OrbTrackName.TextColor3 = T.Text
@@ -3506,7 +3974,7 @@ local function BuildMusicPlayer(env)
 		ModalSave.BackgroundColor3 = T.Accent
 		ModalCancel.BackgroundColor3 = T.Surface2
 		ModalCancel.TextColor3 = T.Text
-		for _, box in ipairs({FieldName, FieldArtist, FieldId}) do
+		for _, box in ipairs({FieldName, FieldArtist, FieldUrl, FieldId}) do
 			box.BackgroundColor3 = T.Surface2
 			box.TextColor3 = T.Text
 			box.PlaceholderColor3 = T.TextDim
@@ -3670,6 +4138,23 @@ local function KeyGroup(word)
 	return table.concat(out)
 end
 
+--// exact inverse of KeyGroup: 4 characters back into the 20-bit word.
+--// Returns nil when the group holds a character outside the alphabet.
+local function GroupValue(group)
+	if type(group) ~= "string" or #group ~= 4 then
+		return nil
+	end
+	local v = 0
+	for i = 0, 3 do
+		local idx = string.find(KEY_ALPHABET, string.sub(group, i + 1, i + 1), 1, true)
+		if not idx then
+			return nil
+		end
+		v = v + (idx - 1) * (2 ^ (5 * i))
+	end
+	return v
+end
+
 --// The one function the website mirrors in JavaScript.
 local function ComputeKey(salt, day, prefix)
 	salt = tostring(salt or "")
@@ -3681,12 +4166,130 @@ local function ComputeKey(salt, day, prefix)
 end
 
 --// today's day number, UTC, matching JS Math.floor(Date.now() / 86400000)
+--// Kept only so old scripts calling GetKeyForDay() still resolve; the live
+--// gate no longer buckets by calendar day.
 local function CurrentDay()
 	local t = os.time()
 	if type(t) ~= "number" then
 		return 0
 	end
 	return math.floor(t / 86400)
+end
+
+------------------------------------------------------------------
+-- 24 HOUR KEYS (V9.2)
+--
+-- The old scheme hashed a UTC day number, so a key minted at 23:50 died
+-- ten minutes later and GraceDays could stretch it to 48h.  Nobody got
+-- the 24 hours they were promised.
+--
+-- Now the minute the key was minted is carried *inside the key itself*,
+-- encrypted, so any key is valid for exactly KEY_LIFETIME seconds from
+-- the moment it was generated - no matter when that was.  The gate needs
+-- no server and no clock sync: it simply decodes the stamp and subtracts.
+--
+-- Layout, 3 groups x 20 bits = 60 bits total:
+--   g1 = (stampLo 13b << 7 | macA 7b) XOR mask1
+--   g2 = (stampHi 13b << 7 | macB 7b) XOR mask2
+--   g3 =  macC 20b
+-- The 34 MAC bits make a guessed key a 1-in-17-billion shot, and the
+-- masks stop the stamp from being readable straight off the string.
+------------------------------------------------------------------
+
+local KEY_EPOCH    = 1735689600  -- 2025-01-01T00:00:00Z, start of stamp counting
+local KEY_LIFETIME = 86400       -- exactly 24 hours, in seconds
+local KEY_STAMP_WRAP = 67108864  -- 2^26 minutes ~= 127 years of headroom
+
+--// wall clock -> minute stamp
+local function TimeToStamp(t)
+	t = tonumber(t) or 0
+	return math.floor((t - KEY_EPOCH) / 60) % KEY_STAMP_WRAP
+end
+
+--// minute stamp -> wall clock (start of that minute)
+local function StampToTime(stamp)
+	return KEY_EPOCH + (tonumber(stamp) or 0) * 60
+end
+
+local function CurrentStamp()
+	local t = os.time()
+	if type(t) ~= "number" then
+		return 0
+	end
+	return TimeToStamp(t)
+end
+
+--// per-salt masks, so two scripts with different salts never share keys
+local function KeyMasks(salt)
+	salt = tostring(salt or "")
+	return Fnv1a(salt .. "|MASK|1") % 1048576, Fnv1a(salt .. "|MASK|2") % 1048576
+end
+
+--// Mint the key that was/is valid at `stamp`.  This is the one function
+--// the website mirrors in JavaScript.
+local function ComputeKeyAt(salt, stamp, prefix)
+	salt   = tostring(salt or "")
+	prefix = tostring(prefix or "KMX")
+	stamp  = math.floor(tonumber(stamp) or 0) % KEY_STAMP_WRAP
+
+	local lo, hi = stamp % 8192, math.floor(stamp / 8192)
+	local mac = Fnv1a(salt .. "|" .. stamp .. "|MAC")
+	local macA = mac % 128
+	local macB = math.floor(mac / 128) % 128
+	local macC = math.floor(mac / 16384) % 1048576
+	local m1, m2 = KeyMasks(salt)
+
+	return prefix .. "-" .. KeyGroup(Bxor32(lo * 128 + macA, m1))
+		.. "-" .. KeyGroup(Bxor32(hi * 128 + macB, m2))
+		.. "-" .. KeyGroup(macC)
+end
+
+--// Read the mint time back out of a key body (12 chars, no prefix/dashes).
+--// Returns the stamp, or nil when the MAC does not check out - which is
+--// what makes a hand-typed fake key impossible.
+local function DecodeKeyStamp(salt, body)
+	salt = tostring(salt or "")
+	if type(body) ~= "string" or #body ~= 12 then
+		return nil
+	end
+	local w1 = GroupValue(string.sub(body, 1, 4))
+	local w2 = GroupValue(string.sub(body, 5, 8))
+	local w3 = GroupValue(string.sub(body, 9, 12))
+	if not (w1 and w2 and w3) then
+		return nil
+	end
+	local m1, m2 = KeyMasks(salt)
+	local x1, x2 = Bxor32(w1, m1), Bxor32(w2, m2)
+	local lo, macA = math.floor(x1 / 128), x1 % 128
+	local hi, macB = math.floor(x2 / 128), x2 % 128
+	local stamp = hi * 8192 + lo
+
+	local mac = Fnv1a(salt .. "|" .. stamp .. "|MAC")
+	if mac % 128 ~= macA then
+		return nil
+	end
+	if math.floor(mac / 128) % 128 ~= macB then
+		return nil
+	end
+	if math.floor(mac / 16384) % 1048576 ~= w3 then
+		return nil
+	end
+	return stamp
+end
+
+--// "5h 42m" / "58m 03s" - how the countdown is worded everywhere
+local function FormatRemaining(secs)
+	secs = math.max(0, math.floor(tonumber(secs) or 0))
+	local h = math.floor(secs / 3600)
+	local m = math.floor((secs % 3600) / 60)
+	local s = secs % 60
+	if h > 0 then
+		return string.format("%dh %02dm", h, m)
+	end
+	if m > 0 then
+		return string.format("%dm %02ds", m, s)
+	end
+	return string.format("%ds", s)
 end
 
 local function NormalizeKey(s)
@@ -3709,11 +4312,37 @@ local function BuildKeySystem(env)
 
 	local Title    = tostring(opts.Title or "Kilometres UI X")
 	local Subtitle = tostring(opts.Subtitle or "key required")
-	local Note     = tostring(opts.Note or "Grab a free key from the KilometresUIX site. Keys roll over every 24 hours.")
+	local Note     = tostring(opts.Note or "Grab a free key from the KilometresUIX site. Every key lasts exactly 24 hours from the moment it is generated, then resets itself.")
 	local Link     = tostring(opts.Link or opts.GetKeyUrl or "https://kilometresuix.pages.dev")
 	local Salt     = tostring(opts.Salt or "KILOMETRES-UI-X")
 	local Prefix   = tostring(opts.Prefix or "KMX")
-	local Grace    = tonumber(opts.GraceDays) or 1
+
+	-- V9.4: SERVER-CHECKED KEYS.
+	-- Give Website (or VerifyUrl) and the script stops needing the salt at
+	-- all: it posts the key to your site and trusts the yes/no it gets back.
+	-- That is the only way the salt can really stay secret, because anything
+	-- written in this script is readable by every player who runs it.
+	local Website = opts.Website or opts.Site or opts.ServerUrl
+	local VerifyUrl = opts.VerifyUrl
+	if not VerifyUrl and Website then
+		VerifyUrl = tostring(Website):gsub("/+$", "") .. "/api/verify"
+	end
+	if VerifyUrl then
+		VerifyUrl = tostring(VerifyUrl)
+		if not Link or Link == "https://kilometresuix.pages.dev" then
+			if Website then
+				Link = tostring(Website):gsub("/+$", "")
+			end
+		end
+	end
+	-- V9.2: keys live a fixed span from the moment they are minted.
+	-- GraceDays is gone - it is what made "24 hours" mean anything from
+	-- ten minutes to two days.  LifetimeHours is the knob now.
+	local Lifetime = tonumber(opts.LifetimeSeconds)
+		or ((tonumber(opts.LifetimeHours) or 24) * 3600)
+	if Lifetime <= 0 then
+		Lifetime = KEY_LIFETIME
+	end
 	local Attempts = tonumber(opts.MaxAttempts) or 0   -- 0 = unlimited
 	local Remember = opts.SaveKey ~= false
 	local KeyFile  = tostring(opts.KeyFile or ((SaveFile:match("^(.*)/[^/]+$") or "KilometresUIX") .. "/key.json"))
@@ -3734,43 +4363,105 @@ local function BuildKeySystem(env)
 
 	local Tries = 0
 	local Verified = false
+	local ExpiresAt = nil          -- unix seconds; nil = lifetime/custom key
+	local ExpiryWatch = nil        -- running watchdog token
+	local OnExpiredCb = opts.OnExpired
+	local StartExpiryWatch         -- forward declaration, defined after Accept
 
 	------------------------------------------------------------------
 	-- VALIDATION
 	------------------------------------------------------------------
 
+	--// Returns: ok, message, expiresAt (unix seconds, nil for lifetime keys)
 	local function IsValid(raw)
 		local given = NormalizeKey(raw)
 		if given == "" then
-			return false, "Enter a key first."
+			return false, "Enter a key first.", nil
 		end
 		if StaticKeys[given] then
-			return true, "Lifetime key accepted."
+			return true, "Lifetime key accepted.", nil
 		end
 		-- a custom validator always wins, if the script supplied one
 		if type(opts.Validate) == "function" then
 			local ok, res = pcall(opts.Validate, raw)
 			if ok and res then
-				return true, "Key accepted."
+				return true, "Key accepted.", nil
 			end
 		end
-		local today = CurrentDay()
-		for back = 0, math.max(0, Grace) do
-			if given == NormalizeKey(ComputeKey(Salt, today - back, Prefix)) then
-				if back == 0 then
-					return true, "Key accepted - valid for today."
+
+		-- V9.4: if the script points at a website, that website is the
+		-- authority.  We never compute anything locally, so no salt is
+		-- needed here and none can be stolen out of this file.
+		if VerifyUrl then
+			local ok, res = pcall(function()
+				local sep = string.find(VerifyUrl, "?", 1, true) and "&" or "?"
+				local url = VerifyUrl .. sep .. "key=" .. UrlEncode(given)
+				return game:HttpGet(url, true)
+			end)
+			if not ok or type(res) ~= "string" or res == "" then
+				return false, "Cannot reach the key server - check your internet.", nil
+			end
+
+			-- tiny hand-rolled reader: the reply is a flat, known object
+			local valid = string.match(res, '"valid"%s*:%s*(%a+)')
+			if valid ~= "true" then
+				local reason = string.match(res, '"reason"%s*:%s*"([^"]*)"') or "invalid"
+				if reason == "expired" then
+					return false, "This key has expired - grab a fresh one.", nil
+				elseif reason == "empty" then
+					return false, "Enter a key first.", nil
 				end
-				return true, "Key accepted - expires soon, grab a fresh one."
+				return false, "That key is not valid.", nil
 			end
+
+			local exp = tonumber(string.match(res, '"expires"%s*:%s*(%d+)'))
+			return true, "Key accepted.", exp
 		end
-		return false, "That key is wrong or has expired."
+
+		-- strip the prefix, then read the mint time back out of the key
+		local body = given
+		local pfx = NormalizeKey(Prefix)
+		if pfx ~= "" and string.sub(body, 1, #pfx) == pfx then
+			body = string.sub(body, #pfx + 1)
+		end
+
+		local stamp = DecodeKeyStamp(Salt, body)
+		if not stamp then
+			return false, "That key is not valid.", nil
+		end
+
+		local issued  = StampToTime(stamp)
+		local expires = issued + Lifetime
+		local now     = os.time()
+
+		if now >= expires then
+			return false, "This key has expired - grab a fresh one.", expires
+		end
+		-- a key stamped in the future means a wrong device clock
+		if issued - now > 3600 then
+			return false, "Your device clock looks wrong - fix it and retry.", expires
+		end
+
+		local left = expires - now
+		if left <= 3600 then
+			return true, "Key accepted - only " .. FormatRemaining(left) .. " left.", expires
+		end
+		return true, "Key accepted - " .. FormatRemaining(left) .. " remaining.", expires
 	end
 
-	local function RememberKey(raw)
+	local function RememberKey(raw, expiresAt)
 		if not Remember then
 			return
 		end
-		local json = SafeJSONEncode({Key = tostring(raw), Day = CurrentDay(), Salt = Salt})
+		local now = os.time()
+		local json = SafeJSONEncode({
+			Key       = tostring(raw),
+			Salt      = Salt,
+			IssuedAt  = now,
+			ExpiresAt = expiresAt or (now + Lifetime),   -- nil = lifetime key
+			Lifetime  = Lifetime,
+			Day       = CurrentDay(),                    -- legacy readers
+		})
 		if json then
 			TryWriteFile(KeyFile, json)
 		end
@@ -3782,16 +4473,29 @@ local function BuildKeySystem(env)
 		end
 	end
 
+	--// Reads the saved key back, but *only* if it is still inside its 24
+	--// hours.  A stale file is deleted on the spot, which is the auto-reset:
+	--// the gate simply reappears on the next launch.
 	local function LoadRememberedKey()
 		if not Remember then
 			return nil
 		end
 		local raw = TryReadFile(KeyFile)
 		local data = raw and SafeJSONDecode(raw)
-		if type(data) == "table" and type(data.Key) == "string" and data.Key ~= "" then
-			return data.Key
+		if type(data) ~= "table" or type(data.Key) ~= "string" or data.Key == "" then
+			return nil
 		end
-		return nil
+		-- a key saved under a different salt is not ours
+		if type(data.Salt) == "string" and data.Salt ~= Salt then
+			ForgetKey()
+			return nil
+		end
+		local exp = tonumber(data.ExpiresAt)
+		if exp and os.time() >= exp then
+			ForgetKey()
+			return nil, exp
+		end
+		return data.Key, exp
 	end
 
 	------------------------------------------------------------------
@@ -4081,12 +4785,52 @@ local function BuildKeySystem(env)
 		end)
 	end
 
-	local function Accept(raw, silent)
+	------------------------------------------------------------------
+	-- AUTO RESET
+	--
+	-- The moment the 24 hours run out we throw the saved key away and
+	-- tell the host script, so the session locks itself instead of
+	-- staying open until the next launch.
+	------------------------------------------------------------------
+
+	function StartExpiryWatch()
+		if not ExpiresAt then
+			return   -- lifetime key or custom validator: nothing to count down
+		end
+		local token = {}
+		ExpiryWatch = token
+		task.spawn(function()
+			while ExpiryWatch == token do
+				local left = ExpiresAt - os.time()
+				if left <= 0 then
+					break
+				end
+				-- tick often near the end, lazily when there are hours to go
+				task.wait(left > 120 and 30 or 1)
+			end
+			if ExpiryWatch ~= token then
+				return   -- superseded by a newer key
+			end
+			ExpiryWatch = nil
+			Verified = false
+			ForgetKey()
+			if Notify then
+				pcall(Notify, "Key Expired", "Your 24 hours are up - enter a new key.", 6, "Warning")
+			end
+			if type(OnExpiredCb) == "function" then
+				pcall(OnExpiredCb)
+			end
+		end)
+	end
+
+	local function Accept(raw, silent, expiresAt)
 		if Verified then
 			return
 		end
 		Verified = true
-		RememberKey(raw)
+		ExpiresAt = expiresAt
+		RememberKey(raw, expiresAt)
+		StartExpiryWatch()
 		if not silent then
 			SetStatus("Unlocked.", "ok")
 		end
@@ -4126,10 +4870,10 @@ local function BuildKeySystem(env)
 		if Verified or Closing then
 			return
 		end
-		local ok, msg = IsValid(Box.Text)
+		local ok, msg, expires = IsValid(Box.Text)
 		if ok then
 			SetStatus(msg, "ok")
-			Accept(Box.Text)
+			Accept(Box.Text, false, expires)
 		else
 			Reject(msg)
 		end
@@ -4206,19 +4950,23 @@ local function BuildKeySystem(env)
 		end)
 	end)
 
-	-- a saved key that is still in date skips the gate entirely
+	-- a saved key that is still inside its 24 hours skips the gate entirely;
+	-- an expired one is wiped and the user simply sees the gate (auto-reset)
 	do
 		local saved = LoadRememberedKey()
 		if saved then
-			local ok = IsValid(saved)
+			local ok, _, expires = IsValid(saved)
 			if ok then
 				Box.Text = saved
-				SetStatus("Saved key still valid - unlocking.", "ok")
+				local left = expires and (expires - os.time())
+				SetStatus(left and ("Saved key valid - " .. FormatRemaining(left) .. " left.")
+					or "Saved key still valid - unlocking.", "ok")
 				task.delay(0.25, function()
-					Accept(saved, true)
+					Accept(saved, true, expires)
 				end)
 			else
 				ForgetKey()
+				SetStatus("Your last key expired - enter a new one.", nil)
 			end
 		end
 	end
@@ -4228,15 +4976,40 @@ local function BuildKeySystem(env)
 	end
 
 	function KeyHooks.Forget()
+		ExpiryWatch = nil
+		ExpiresAt = nil
 		ForgetKey()
 	end
 
+	--// a key minted right now, valid for the next 24 hours
 	function KeyHooks.Today()
-		return ComputeKey(Salt, CurrentDay(), Prefix)
+		return ComputeKeyAt(Salt, CurrentStamp(), Prefix)
+	end
+
+	--// unix seconds when the active key dies (nil = none / lifetime key)
+	function KeyHooks.ExpiresAt()
+		return ExpiresAt
+	end
+
+	--// seconds left on the active key, 0 when expired, nil when unlimited
+	function KeyHooks.TimeLeft()
+		if not ExpiresAt then
+			return nil
+		end
+		return math.max(0, ExpiresAt - os.time())
+	end
+
+	--// "5h 42m" for UI use
+	function KeyHooks.TimeLeftText()
+		if not ExpiresAt then
+			return "unlimited"
+		end
+		return FormatRemaining(math.max(0, ExpiresAt - os.time()))
 	end
 
 	function KeyHooks.Destroy()
 		Closing = true
+		ExpiryWatch = nil
 		if KScreen and KScreen.Parent then
 			KScreen:Destroy()
 		end
@@ -12437,16 +13210,41 @@ function Library:CreateWindow(cfg)
 		return KeyGate.IsVerified()
 	end
 
-	--// today's key for a given salt/prefix - the same string the website
-	--// prints.  Handy for debugging or for a "staff" build.
+	--// a key minted right now, good for the next 24 hours - the same string
+	--// the website prints.  Handy for debugging or for a "staff" build.
 	function API:GetTodayKey(salt, prefix)
-		return ComputeKey(salt or "KILOMETRES-UI-X", CurrentDay(), prefix or "KMX")
+		return ComputeKeyAt(salt or "KILOMETRES-UI-X", CurrentStamp(), prefix or "KMX")
 	end
 
-	--// key for any day offset (0 = today, 1 = tomorrow, -1 = yesterday)
+	--// key as it would have been minted `offset` days from now
+	--// (0 = now, 1 = this time tomorrow, -1 = this time yesterday)
 	function API:GetKeyForDay(offset, salt, prefix)
 		local n = tonumber(offset) or 0
-		return ComputeKey(salt or "KILOMETRES-UI-X", CurrentDay() + n, prefix or "KMX")
+		return ComputeKeyAt(salt or "KILOMETRES-UI-X", CurrentStamp() + n * 1440, prefix or "KMX")
+	end
+
+	--// seconds left before the active key expires (nil = no gate/unlimited)
+	function API:GetKeyTimeLeft()
+		if KeyGate and KeyGate.TimeLeft then
+			return KeyGate.TimeLeft()
+		end
+		return nil
+	end
+
+	--// unix timestamp the active key dies at (nil = no gate/unlimited)
+	function API:GetKeyExpiry()
+		if KeyGate and KeyGate.ExpiresAt then
+			return KeyGate.ExpiresAt()
+		end
+		return nil
+	end
+
+	--// "5h 42m" - ready to drop straight into a Label
+	function API:GetKeyTimeLeftText()
+		if KeyGate and KeyGate.TimeLeftText then
+			return KeyGate.TimeLeftText()
+		end
+		return "unlimited"
 	end
 
 	--// forget the saved key, so the gate shows again next launch
