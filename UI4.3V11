@@ -1,8 +1,15 @@
 --// ======================================================================
---// KILOMETRES UI X  ·  V10  (PURPLE ECLIPSE · PERFORMANCE GUARD · UI DIAGNOSTICS)
+--// KILOMETRES UI X  ·  V11  (PURPLE ECLIPSE · SINGLE WINDOW · RESPAWN AIM · SMART WALL CHECK)
 --//
 --// Author build for: KilometresSCP096
---// Version sequence:  V1 -> V3 -> V5 -> V7 -> V8 -> V9 -> V10 (THIS)
+--// Version sequence:  V1 -> V3 -> V5 -> V7 -> V8 -> V9 -> V10 -> V11 (THIS)
+--//
+--// V11 upgrade highlights (keeps the existing public API compatible):
+--//  * SINGLE-WINDOW GUARD: re-opening the library destroys the previous UI
+--//    instance before creating a new one.
+--//  * RESPAWN-SAFE AIM: clears stale targets and refreshes camera/humanoid refs.
+--//  * SMART WALL CHECK: skips a raycast hit only when its origin is inside
+--//    that BasePart, then continues checking for further obstructions.
 --//
 --// V10 upgrade highlights (keeps the V5/V7/V8/V9 public API compatible):
 --//  * ONE UNIVERSAL SUITE TAB   - every suite feature now lives under a
@@ -5461,7 +5468,7 @@ local LoadString = (type(loadstring) == "function" and loadstring)
 --// ======================================================================
 
 local Library = {
-	Version = "V10",
+	Version = "V11",
 	VersionName = "Charlotte",
 	Themes = Themes,
 }
@@ -5846,17 +5853,63 @@ local function BuildUniversalSuite(Window)
 		end
 	end
 
+	-- V11 SMART WALL CHECK:
+	-- A camera/player spawned inside a large invisible BasePart can make the
+	-- first ray hit that same containing part at distance zero. Treat that
+	-- specific hit as the ray's starting volume, exclude it, and continue the
+	-- ray so a second wall between the player and target still blocks aim.
+	local function PointInsidePart(basePart, worldPoint)
+		if not basePart or not basePart:IsA("BasePart") then
+			return false
+		end
+		local ok, inside = pcall(function()
+			local p = basePart.CFrame:PointToObjectSpace(worldPoint)
+			local h = basePart.Size * 0.5 + Vector3.new(0.06, 0.06, 0.06)
+			return math.abs(p.X) <= h.X
+				and math.abs(p.Y) <= h.Y
+				and math.abs(p.Z) <= h.Z
+		end)
+		return ok and inside == true
+	end
+
 	local function IsVisible(part, plr)
 		if not S.WallCheck or not part then
 			return true
 		end
+		if not Camera or not Camera.Parent or not part.Parent then
+			return false
+		end
+
+		local origin = Camera.CFrame.Position
+		local direction = part.Position - origin
+		if direction.Magnitude <= 0.05 then
+			return true
+		end
+
+		local ignored = {GetChar(LocalPlayer), GetChar(plr)}
 		local params = RaycastParams.new()
 		params.FilterType = EXCLUDE_FILTER
-		params.FilterDescendantsInstances = {GetChar(LocalPlayer), GetChar(plr)}
+		params.FilterDescendantsInstances = ignored
 		params.IgnoreWater = true
-		local origin = Camera.CFrame.Position
-		local hit = workspace:Raycast(origin, part.Position - origin, params)
-		return hit == nil
+
+		-- Bound the retry count: pathological overlapping geometry must never
+		-- turn target selection into an unbounded raycast loop.
+		for _ = 1, 10 do
+			local hit = workspace:Raycast(origin, direction, params)
+			if not hit then
+				return true
+			end
+			local obstacle = hit.Instance
+			if PointInsidePart(obstacle, origin) then
+				table.insert(ignored, obstacle)
+				params.FilterDescendantsInstances = ignored
+			else
+				return false
+			end
+		end
+		-- Too many nested containing parts: fail closed rather than aim through
+		-- unknown geometry.
+		return false
 	end
 
 	-- V9 FIX: prediction now uses velocity RELATIVE to the local player, so it
@@ -5971,7 +6024,7 @@ local function BuildUniversalSuite(Window)
 	end
 
 	local function AimAt(part)
-		if not part then
+		if not part or not part.Parent or not Camera or not Camera.Parent then
 			return
 		end
 		local goalPos = PredictedPosition(part)
@@ -6771,6 +6824,9 @@ local function BuildUniversalSuite(Window)
 		end
 		FrameDelta = (type(dt) == "number" and dt > 0) and dt or (1 / 60)
 		Camera = workspace.CurrentCamera or Camera
+		if not IsAlive(LocalPlayer) then
+			CurrentTarget = nil
+		end
 
 		UpdateFOVCircle()
 
@@ -6914,10 +6970,38 @@ local function BuildUniversalSuite(Window)
 	-- V9 FIX: respawn housekeeping used to only restore fly + movement, so
 	-- speed/jump came back but noclip, hitbox, X-Ray, full-bright and the FOV
 	-- override silently died after every death. All of it is re-applied now.
+	local PreviousLocalHumanoid = GetHum(LocalPlayer)
+
+	-- Drop sticky references as soon as the old character is removed. This
+	-- prevents a dead/streamed-out target part from surviving into the next life.
+	Bind(LocalPlayer.CharacterRemoving, function()
+		CurrentTarget = nil
+		S.AimActive = false
+	end)
+
 	Bind(LocalPlayer.CharacterAdded, function(char)
-		task.wait(1)
+		CurrentTarget = nil
+		S.AimActive = false
+		task.wait(0.25)
 		if Unloading then
 			return
+		end
+
+		-- Reacquire the new humanoid and camera after Roblox's respawn camera
+		-- handoff. Do not overwrite a valid spectator/custom camera subject.
+		local newHumanoid = char:FindFirstChildOfClass("Humanoid")
+			or char:WaitForChild("Humanoid", 8)
+		Camera = workspace.CurrentCamera or Camera
+		if Camera and newHumanoid then
+			local subject = Camera.CameraSubject
+			local subjectInvalid = subject == nil or subject == PreviousLocalHumanoid
+			if subject and subject:IsA("Humanoid") and subject.Health <= 0 then
+				subjectInvalid = true
+			end
+			if subjectInvalid then
+				pcall(function() Camera.CameraSubject = newHumanoid end)
+			end
+			PreviousLocalHumanoid = newHumanoid
 		end
 
 		-- force the noclip cache to rebuild against the new character
@@ -6938,8 +7022,7 @@ local function BuildUniversalSuite(Window)
 			ApplyXRay(true)
 		end
 		Try(function()
-			if S.CameraFOV and S.CameraFOV ~= 70 then
-				Camera = workspace.CurrentCamera or Camera
+			if S.CameraFOV and S.CameraFOV ~= 70 and Camera then
 				Camera.FieldOfView = S.CameraFOV
 			end
 		end)
@@ -7531,6 +7614,16 @@ local function BuildUniversalSuite(Window)
 end
 
 function Library:CreateWindow(cfg)
+	-- V11 SINGLE-WINDOW GUARD. Keep the token on the module table so repeated
+	-- CreateWindow calls in the same loaded library cleanly destroy the old
+	-- window (including its connections, suite loops, AI/music windows).
+	local PreviousWindowToken = rawget(Library, "__KMUIXActiveWindow")
+	if type(PreviousWindowToken) == "table" and type(PreviousWindowToken.Destroy) == "function" then
+		pcall(PreviousWindowToken.Destroy)
+	end
+	local WindowToken = {}
+	Library.__KMUIXActiveWindow = WindowToken
+
 	cfg = cfg or {}
 	local SaveFile = cfg.SaveFile or "KilometresUIX/settings.json"
 
@@ -7805,6 +7898,19 @@ function Library:CreateWindow(cfg)
 	------------------------------------------------------------------
 	-- ROOT GUI
 	------------------------------------------------------------------
+
+	-- Also remove orphaned same-name roots left by a script re-execution where
+	-- the previous module table (and its token) no longer exists.
+	pcall(function()
+		local parent = SafeParent()
+		if parent then
+			for _, child in ipairs(parent:GetChildren()) do
+				if child:IsA("ScreenGui") and child.Name == "KilometresUIX" then
+					child:Destroy()
+				end
+			end
+		end
+	end)
 
 	local Screen = New("ScreenGui", {
 		Name = "KilometresUIX",
@@ -13390,6 +13496,9 @@ function Library:CreateWindow(cfg)
 			return
 		end
 		State.Destroyed = true
+		if rawget(Library, "__KMUIXActiveWindow") == WindowToken then
+			Library.__KMUIXActiveWindow = nil
+		end
 		Gemini.Generation = Gemini.Generation + 1
 		Gemini.Sending = false
 		if ThinkingRef then
@@ -13426,6 +13535,7 @@ function Library:CreateWindow(cfg)
 			Screen:Destroy()
 		end
 	end
+	WindowToken.Destroy = Destroy
 
 	------------------------------------------------------------------
 	-- STRUCTURAL THEME REFRESHER (runs on every theme change)
