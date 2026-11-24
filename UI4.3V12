@@ -1,8 +1,8 @@
 --// ======================================================================
---// KILOMETRES UI X  ·  V12  (PURPLE ECLIPSE · CINEMATIC INTRO · FPS MONITOR · POLISH)
+--// KILOMETRES UI X  ·  V13  (PURPLE ECLIPSE · CINEMATIC INTRO · FPS MONITOR · POLISH)
 --//
 --// Author build for: KilometresSCP096
---// Version sequence:  V1 -> V3 -> V5 -> V7 -> V8 -> V9 -> V10 -> V11 (THIS)
+--// Version sequence:  V1 -> V3 -> V5 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 (THIS)
 --//
 --// V11 upgrade highlights (keeps the existing public API compatible):
 --//  * SINGLE-WINDOW GUARD: re-opening the library destroys the previous UI
@@ -5474,7 +5474,7 @@ local LoadString = (type(loadstring) == "function" and loadstring)
 --// ======================================================================
 
 local Library = {
-	Version = "V12",
+	Version = "V13",
 	VersionName = "Purple Eclipse",
 	Themes = Themes,
 }
@@ -7941,7 +7941,7 @@ function Library:CreateWindow(cfg)
 	local IntroReady = false
 	local IntroStartedAt = os.clock()
 	local IntroRoot = New("CanvasGroup", {
-		Name = "KM_V12_Intro",
+		Name = "KM_V13_Intro",
 		Parent = Screen,
 		Size = UDim2.fromScale(1, 1),
 		BackgroundColor3 = Color3.fromRGB(8, 5, 18),
@@ -8046,7 +8046,7 @@ function Library:CreateWindow(cfg)
 		task.spawn(function()
 			local okVideo, videoErr = pcall(cfg.IntroVideoPlayer, VideoHost)
 			if not okVideo and cfg.Debug == true then
-				warn("[Kilometres UI X V12] Intro video adapter failed: " .. tostring(videoErr))
+				warn("[Kilometres UI X V13] Intro video adapter failed: " .. tostring(videoErr))
 			end
 		end)
 	end
