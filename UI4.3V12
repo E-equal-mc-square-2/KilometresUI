@@ -1,8 +1,12 @@
 --// ======================================================================
---// KILOMETRES UI X  ·  V13  (PURPLE ECLIPSE · CINEMATIC INTRO · FPS MONITOR · POLISH)
+--// KILOMETRES UI X  ·  V13  (PURPLE ECLIPSE · WEAPONRY TAB)
 --//
 --// Author build for: KilometresSCP096
 --// Version sequence:  V1 -> V3 -> V5 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 (THIS)
+--//
+--// V13 upgrade highlights (keeps the existing public API compatible):
+--//  * PERMANENT WEAPONRY TAB: game-specific Hitboxes targeting and ESP are
+--//    built into the library as a separate top-level tab, loaded once per window.
 --//
 --// V11 upgrade highlights (keeps the existing public API compatible):
 --//  * SINGLE-WINDOW GUARD: re-opening the library destroys the previous UI
@@ -7619,6 +7623,270 @@ local function BuildUniversalSuite(Window)
 	return {Unload = Unload, State = S}
 end
 
+--// ======================================================================
+--// WEAPONRY TAB (V13)
+--// Dedicated game-specific tab. Uses the game's replicated Hitboxes folder.
+--// Built independently from Universal Suite; no second window is created.
+--// ======================================================================
+local function BuildWeaponryTab(Window, WindowState)
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local Workspace = game:GetService("Workspace")
+    local LocalPlayer = Players.LocalPlayer
+
+    local HasDrawing = type(Drawing) == "table" and type(Drawing.new) == "function"
+    local Settings = {
+        AimEnabled = false,
+        ESPEnabled = false,
+        WallCheck = true,
+        TeamCheck = true,
+        AliveCheck = true,
+        FOV = 180,
+        Smoothing = 0.18,
+        MaxDistance = 2500,
+        AimPart = "HitboxHead",
+        ShowName = true,
+        ShowBox = true,
+        ShowTracer = false,
+        ShowDistance = true,
+    }
+
+    local alive = true
+    local drawings = {}
+    local connections = {}
+    local currentTarget = nil
+
+    local function safeRemove(obj)
+        if obj then pcall(function() obj:Remove() end) end
+    end
+
+    local function clearPlayerDrawings(player)
+        local d = drawings[player]
+        if not d then return end
+        for _, obj in pairs(d) do safeRemove(obj) end
+        drawings[player] = nil
+    end
+
+    local function makeDrawing(kind)
+        if not HasDrawing then return nil end
+        local ok, obj = pcall(Drawing.new, kind)
+        if not ok then return nil end
+        return obj
+    end
+
+    local function getDrawings(player)
+        if drawings[player] then return drawings[player] end
+        local d = {
+            Box = makeDrawing("Square"),
+            Name = makeDrawing("Text"),
+            Distance = makeDrawing("Text"),
+            Tracer = makeDrawing("Line"),
+        }
+        if d.Box then d.Box.Thickness = 1.5; d.Box.Filled = false; d.Box.Visible = false end
+        if d.Name then d.Name.Size = 13; d.Name.Center = true; d.Name.Outline = true; d.Name.Visible = false end
+        if d.Distance then d.Distance.Size = 12; d.Distance.Center = true; d.Distance.Outline = true; d.Distance.Visible = false end
+        if d.Tracer then d.Tracer.Thickness = 1.2; d.Tracer.Visible = false end
+        drawings[player] = d
+        return d
+    end
+
+    local function getHitboxFolder(player)
+        local root = Workspace:FindFirstChild("Hitboxes")
+        if not root then return nil end
+        return root:FindFirstChild(tostring(player.UserId))
+    end
+
+    local function isAlive(player)
+        local character = player.Character
+        if not character then return false end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health <= 0 then return false end
+        local hitbox = getHitboxFolder(player)
+        local part = hitbox and hitbox:FindFirstChild(Settings.AimPart)
+        return part ~= nil and part:IsA("BasePart")
+    end
+
+    local function isEnemy(player)
+        if player == LocalPlayer then return false end
+        if Settings.TeamCheck and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then
+            return false
+        end
+        if Settings.AliveCheck and not isAlive(player) then return false end
+        return true
+    end
+
+    local function visibleToCamera(part)
+        if not Settings.WallCheck then return true end
+        local camera = Workspace.CurrentCamera
+        if not camera or not part then return false end
+        local origin = camera.CFrame.Position
+        local direction = part.Position - origin
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local excluded = {}
+        if LocalPlayer.Character then table.insert(excluded, LocalPlayer.Character) end
+        local hitboxesRoot = Workspace:FindFirstChild("Hitboxes")
+        if hitboxesRoot then table.insert(excluded, hitboxesRoot) end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Character then table.insert(excluded, p.Character) end
+        end
+        params.FilterDescendantsInstances = excluded
+        params.IgnoreWater = true
+        local remaining = direction
+        for _ = 1, 8 do
+            local result = Workspace:Raycast(origin, remaining, params)
+            if not result then return true end
+            local hit = result.Instance
+            if hit == part or hit:IsDescendantOf(part.Parent) then return true end
+            if hit:IsA("BasePart") and (hit.Transparency >= 0.9 or not hit.CanCollide) then
+                table.insert(excluded, hit)
+                params.FilterDescendantsInstances = excluded
+                local travelled = (result.Position - origin).Magnitude + 0.05
+                local unit = direction.Magnitude > 0 and direction.Unit or Vector3.zero
+                origin = origin + unit * travelled
+                remaining = part.Position - origin
+                if remaining.Magnitude <= 0.05 then return true end
+            else
+                return false
+            end
+        end
+        return false
+    end
+
+    local function findTarget()
+        local camera = Workspace.CurrentCamera
+        if not camera then return nil end
+        local viewport = camera.ViewportSize
+        local center = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+        local best, bestDistance = nil, Settings.FOV
+        for _, player in ipairs(Players:GetPlayers()) do
+            if isEnemy(player) then
+                local folder = getHitboxFolder(player)
+                local part = folder and folder:FindFirstChild(Settings.AimPart)
+                if part and part:IsA("BasePart") then
+                    local worldDistance = (part.Position - camera.CFrame.Position).Magnitude
+                    if worldDistance <= Settings.MaxDistance and visibleToCamera(part) then
+                        local screen, onScreen = camera:WorldToViewportPoint(part.Position)
+                        if onScreen and screen.Z > 0 then
+                            local distance = (Vector2.new(screen.X, screen.Y) - center).Magnitude
+                            if distance < bestDistance then
+                                best, bestDistance = {Player = player, Part = part}, distance
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    local function updateAim()
+        if not Settings.AimEnabled then currentTarget = nil; return end
+        local camera = Workspace.CurrentCamera
+        if not camera then return end
+        if not currentTarget or not currentTarget.Player or not currentTarget.Player.Parent
+            or not currentTarget.Part or not currentTarget.Part.Parent then
+            currentTarget = findTarget()
+        else
+            local folder = getHitboxFolder(currentTarget.Player)
+            local part = folder and folder:FindFirstChild(Settings.AimPart)
+            if not part or not isEnemy(currentTarget.Player) or not visibleToCamera(part) then
+                currentTarget = findTarget()
+            else
+                currentTarget.Part = part
+            end
+        end
+        if currentTarget and currentTarget.Part then
+            local goal = CFrame.lookAt(camera.CFrame.Position, currentTarget.Part.Position)
+            local alpha = math.clamp(Settings.Smoothing, 0.01, 1)
+            camera.CFrame = camera.CFrame:Lerp(goal, alpha)
+        end
+    end
+
+    local function updateESP()
+        local camera = Workspace.CurrentCamera
+        if not camera then return end
+        local center = Vector2.new(camera.ViewportSize.X * 0.5, camera.ViewportSize.Y)
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and Settings.ESPEnabled and isEnemy(player) then
+                local character = player.Character
+                local head = character and character:FindFirstChild("Head")
+                local root = character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("UpperTorso"))
+                if head and root then
+                    local headPos, headOn = camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                    local rootPos, rootOn = camera:WorldToViewportPoint(root.Position - Vector3.new(0, 2.8, 0))
+                    local d = getDrawings(player)
+                    local on = headOn and rootOn and headPos.Z > 0 and rootPos.Z > 0
+                    local height = math.abs(rootPos.Y - headPos.Y)
+                    local width = height * 0.55
+                    local dist = (root.Position - camera.CFrame.Position).Magnitude
+                    if on and dist <= Settings.MaxDistance then
+                        if d.Box then d.Box.Visible = Settings.ShowBox; d.Box.Position = Vector2.new(headPos.X - width/2, headPos.Y); d.Box.Size = Vector2.new(width, height) end
+                        if d.Name then d.Name.Visible = Settings.ShowName; d.Name.Text = player.DisplayName or player.Name; d.Name.Position = Vector2.new(headPos.X, headPos.Y - 16) end
+                        if d.Distance then d.Distance.Visible = Settings.ShowDistance; d.Distance.Text = string.format("%dm", math.floor(dist)); d.Distance.Position = Vector2.new(headPos.X, rootPos.Y + 2) end
+                        if d.Tracer then d.Tracer.Visible = Settings.ShowTracer; d.Tracer.From = center; d.Tracer.To = Vector2.new(rootPos.X, rootPos.Y) end
+                    else
+                        for _, obj in pairs(d) do if obj then obj.Visible = false end end
+                    end
+                else
+                    clearPlayerDrawings(player)
+                end
+            else
+                clearPlayerDrawings(player)
+            end
+        end
+    end
+
+    local tab = Window:CreateTab("Weaponry", {Icon = "crosshair", Order = 9002})
+    local aim = tab:CreateSection("Weaponry Aimbot")
+    aim:Toggle("Enable Aimbot", false, function(v) Settings.AimEnabled = v; if not v then currentTarget = nil end end)
+    aim:Dropdown("Target Part", {"HitboxHead"}, "HitboxHead", function(v) Settings.AimPart = v; currentTarget = nil end)
+    aim:Slider("FOV Radius", 20, 600, Settings.FOV, function(v) Settings.FOV = v end, 5)
+    aim:Slider("Smoothing", 0.01, 1, Settings.Smoothing, function(v) Settings.Smoothing = v end, 0.01)
+    aim:Slider("Max Distance", 100, 5000, Settings.MaxDistance, function(v) Settings.MaxDistance = v end, 50)
+
+    local filters = tab:CreateSection("Target Filters")
+    filters:Toggle("Wall Check", true, function(v) Settings.WallCheck = v end)
+    filters:Toggle("Team Check", true, function(v) Settings.TeamCheck = v end)
+    filters:Toggle("Alive Check", true, function(v) Settings.AliveCheck = v end)
+
+    local esp = tab:CreateSection("ESP")
+    esp:Toggle("Enable ESP", false, function(v) Settings.ESPEnabled = v; if not v then for player in pairs(drawings) do clearPlayerDrawings(player) end end end)
+    esp:Toggle("2D Box", true, function(v) Settings.ShowBox = v end)
+    esp:Toggle("Player Name", true, function(v) Settings.ShowName = v end)
+    esp:Toggle("Distance", true, function(v) Settings.ShowDistance = v end)
+    esp:Toggle("Tracer", false, function(v) Settings.ShowTracer = v end)
+
+    local info = tab:CreateSection("Status")
+    info:Paragraph("Weaponry integration", "Dedicated built-in tab for games exposing Workspace.Hitboxes/<UserId>/HitboxHead. Aimbot and ESP are controlled independently from Universal Suite.")
+    if not HasDrawing then
+        info:Label("Drawing API unavailable — ESP requires executor Drawing support.")
+    end
+
+    local Unload
+    table.insert(connections, RunService.RenderStepped:Connect(function()
+        if not alive then return end
+        if WindowState and WindowState.Destroyed then
+            if Unload then Unload() end
+            return
+        end
+        pcall(updateAim)
+        pcall(updateESP)
+    end))
+    table.insert(connections, Players.PlayerRemoving:Connect(clearPlayerDrawings))
+
+    Unload = function()
+        if not alive then return end
+        alive = false
+        for _, connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
+        connections = {}
+        for player in pairs(drawings) do clearPlayerDrawings(player) end
+        currentTarget = nil
+    end
+
+    return {Unload = Unload, State = Settings}
+end
+
 function Library:CreateWindow(cfg)
 	-- V11 SINGLE-WINDOW GUARD. Keep the token on the module table so repeated
 	-- CreateWindow calls in the same loaded library cleanly destroy the old
@@ -7941,7 +8209,7 @@ function Library:CreateWindow(cfg)
 	local IntroReady = false
 	local IntroStartedAt = os.clock()
 	local IntroRoot = New("CanvasGroup", {
-		Name = "KM_V13_Intro",
+		Name = "KM_V12_Intro",
 		Parent = Screen,
 		Size = UDim2.fromScale(1, 1),
 		BackgroundColor3 = Color3.fromRGB(8, 5, 18),
@@ -8046,7 +8314,7 @@ function Library:CreateWindow(cfg)
 		task.spawn(function()
 			local okVideo, videoErr = pcall(cfg.IntroVideoPlayer, VideoHost)
 			if not okVideo and cfg.Debug == true then
-				warn("[Kilometres UI X V13] Intro video adapter failed: " .. tostring(videoErr))
+				warn("[Kilometres UI X V12] Intro video adapter failed: " .. tostring(videoErr))
 			end
 		end)
 	end
@@ -14339,7 +14607,31 @@ function Library:CreateWindow(cfg)
 		return suite
 	end
 
+    function API:LoadWeaponry()
+        if State.WeaponryLoaded then
+            return State.Weaponry
+        end
+        State.WeaponryLoaded = true
+        local ok, result = pcall(BuildWeaponryTab, self, State)
+        if not ok then
+            State.WeaponryLoaded = false
+            Notify("Weaponry", "Failed to load: " .. Truncate(tostring(result), 100), 4, "Error")
+            return nil
+        end
+        State.Weaponry = result
+        return result
+    end
+
 	Public = setmetatable(Library, {__index = API})
+
+    -- V13: Weaponry is a permanent built-in top-level tab, independent of Universal Suite.
+    if cfg.Weaponry ~= false then
+        task.defer(function()
+            if not State.Destroyed then
+                Public:LoadWeaponry()
+            end
+        end)
+    end
 
 	-- the aim/ESP/weapon suite ships with the library: it is universal, so it
 	-- is built for every window unless the script opts out.
