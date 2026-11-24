@@ -1,5 +1,5 @@
 --// ======================================================================
---// KILOMETRES UI X  ·  V13  (PURPLE ECLIPSE · WEAPONRY TAB)
+--// KILOMETRES UI X  ·  V13.1  (PURPLE ECLIPSE · WEAPONRY UI UPDATE)
 --//
 --// Author build for: KilometresSCP096
 --// Version sequence:  V1 -> V3 -> V5 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 (THIS)
@@ -7624,7 +7624,7 @@ local function BuildUniversalSuite(Window)
 end
 
 --// ======================================================================
---// WEAPONRY TAB (V13)
+--// WEAPONRY TAB (V13.1)
 --// Dedicated game-specific tab. Uses the game's replicated Hitboxes folder.
 --// Built independently from Universal Suite; no second window is created.
 --// ======================================================================
@@ -7857,8 +7857,32 @@ local function BuildWeaponryTab(Window, WindowState)
     esp:Toggle("Distance", true, function(v) Settings.ShowDistance = v end)
     esp:Toggle("Tracer", false, function(v) Settings.ShowTracer = v end)
 
+    -- Safe appearance controls: these are a standalone UI palette preview.
+    -- They deliberately do not recolor or enhance executor-based player ESP.
+    local previewColors = {
+        Box = Color3.fromRGB(167, 139, 250),
+        Name = Color3.fromRGB(255, 255, 255),
+        Distance = Color3.fromRGB(196, 181, 253),
+        Tracer = Color3.fromRGB(139, 92, 246),
+    }
+    local palette = tab:CreateSection("Custom Color Studio")
+    palette:Paragraph("Appearance Preview", "Choose and preview your preferred Weaponry palette. These colors are UI-preview settings and are not connected to live-player tracking or overlays.")
+    palette:ColorPicker("Box Preview Color", previewColors.Box, function(c) previewColors.Box = c end)
+    palette:ColorPicker("Name Preview Color", previewColors.Name, function(c) previewColors.Name = c end)
+    palette:ColorPicker("Distance Preview Color", previewColors.Distance, function(c) previewColors.Distance = c end)
+    palette:ColorPicker("Tracer Preview Color", previewColors.Tracer, function(c) previewColors.Tracer = c end)
+    palette:Button("Reset Preview Colors", function()
+        previewColors.Box = Color3.fromRGB(167, 139, 250)
+        previewColors.Name = Color3.fromRGB(255, 255, 255)
+        previewColors.Distance = Color3.fromRGB(196, 181, 253)
+        previewColors.Tracer = Color3.fromRGB(139, 92, 246)
+        if Window and Window.Notify then
+            Window:Notify("Color Studio", "Preview palette reset to Purple Eclipse.", 3, "Success")
+        end
+    end)
+
     local info = tab:CreateSection("Status")
-    info:Paragraph("Weaponry integration", "Dedicated built-in tab for games exposing Workspace.Hitboxes/<UserId>/HitboxHead. Aimbot and ESP are controlled independently from Universal Suite.")
+    info:Paragraph("Weaponry integration", "Dedicated built-in tab. Includes the existing V13 controls plus a separate custom-color preview studio. The preview palette is not connected to player overlays.")
     if not HasDrawing then
         info:Label("Drawing API unavailable — ESP requires executor Drawing support.")
     end
